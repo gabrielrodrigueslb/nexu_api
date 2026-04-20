@@ -1,0 +1,13 @@
+export function slugify(value) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "");
+}
+
+export function normalizeEmail(email) {
+  return String(email).trim().toLowerCase();
+}

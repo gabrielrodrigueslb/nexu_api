@@ -1,0 +1,481 @@
+import { Router } from "express";
+import { z } from "zod";
+
+import { writeAuditLog } from "../lib/audit.js";
+import { LEAD_STATUSES, LEAD_TASK_TYPES } from "../lib/constants.js";
+import { HttpError } from "../lib/http-error.js";
+import { toCents } from "../lib/money.js";
+import { buildPageMeta, getPagination } from "../lib/pagination.js";
+import { prisma } from "../lib/prisma.js";
+import { cuidSchema, paginationSchema } from "../lib/schemas.js";
+import { serializeLead } from "../lib/serializers.js";
+import { moveEntityToTrash } from "../lib/trash.js";
+import { authenticate } from "../middlewares/authenticate.js";
+import { requireModuleAccess } from "../middlewares/require-module-access.js";
+import { validate } from "../middlewares/validate.js";
+
+export const leadsRouter = Router();
+
+const leadStatusSchema = z.enum(LEAD_STATUSES);
+const taskTypeSchema = z.enum(LEAD_TASK_TYPES);
+
+const leadTaskInputSchema = z.object({
+  title: z.string().trim().min(2).max(160),
+  type: taskTypeSchema,
+  done: z.boolean().optional(),
+  dueDate: z.string().datetime().optional().nullable(),
+  notes: z.string().trim().max(1000).optional().nullable(),
+});
+
+const leadCommentInputSchema = z.object({
+  message: z.string().trim().min(1).max(2000),
+});
+
+const leadCatalogItemSchema = z.object({
+  catalogItemId: cuidSchema,
+  enabled: z.boolean().optional(),
+  setupAmount: z.coerce.number().min(0).optional(),
+  recurringAmount: z.coerce.number().min(0).optional(),
+});
+
+const createLeadSchema = z.object({
+  company: z.string().trim().min(2).max(160),
+  cnpj: z.string().trim().max(24).optional().nullable(),
+  contact: z.string().trim().max(120).optional().nullable(),
+  email: z.string().email().optional().nullable(),
+  phone: z.string().trim().max(40).optional().nullable(),
+  status: leadStatusSchema,
+  value: z.coerce.number().min(0),
+  paymentMethod: z.string().trim().max(40).optional().nullable(),
+  isLite: z.boolean().optional(),
+  notes: z.string().trim().max(4000).optional().nullable(),
+  sellerId: cuidSchema.optional().nullable(),
+  sdrId: cuidSchema.optional().nullable(),
+  originId: cuidSchema.optional().nullable(),
+  indicatorId: cuidSchema.optional().nullable(),
+  wonAt: z.string().datetime().optional().nullable(),
+  lostAt: z.string().datetime().optional().nullable(),
+  tasks: z.array(leadTaskInputSchema).optional(),
+  catalogItems: z.array(leadCatalogItemSchema).optional(),
+});
+
+const updateLeadSchema = createLeadSchema.partial();
+
+const listLeadsQuerySchema = paginationSchema.extend({
+  q: z.string().trim().optional(),
+  status: leadStatusSchema.optional(),
+  sellerId: cuidSchema.optional(),
+  sdrId: cuidSchema.optional(),
+  originId: cuidSchema.optional(),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
+const leadInclude = {
+  seller: true,
+  sdr: true,
+  origin: true,
+  indicator: true,
+  tasks: {
+    orderBy: {
+      createdAt: "asc",
+    },
+  },
+  comments: {
+    include: {
+      author: true,
+    },
+    orderBy: {
+      createdAt: "desc",
+    },
+  },
+  catalogItems: {
+    include: {
+      catalogItem: true,
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+  },
+  createdBy: true,
+  ticket: true,
+};
+
+leadsRouter.use(authenticate);
+
+leadsRouter.get(
+  "/",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ query: listLeadsQuerySchema }),
+  async (request, response) => {
+    const { page, limit, skip } = getPagination(request.query);
+    const where = {
+      ...(request.query.q
+        ? {
+            OR: [
+              { company: { contains: request.query.q } },
+              { cnpj: { contains: request.query.q } },
+              { contact: { contains: request.query.q } },
+            ],
+          }
+        : {}),
+      ...(request.query.status ? { status: request.query.status } : {}),
+      ...(request.query.sellerId ? { sellerId: request.query.sellerId } : {}),
+      ...(request.query.sdrId ? { sdrId: request.query.sdrId } : {}),
+      ...(request.query.originId ? { originId: request.query.originId } : {}),
+      ...((request.query.from || request.query.to) && {
+        createdAt: {
+          ...(request.query.from ? { gte: new Date(request.query.from) } : {}),
+          ...(request.query.to ? { lte: new Date(request.query.to) } : {}),
+        },
+      }),
+    };
+
+    const [items, total] = await prisma.$transaction([
+      prisma.lead.findMany({
+        where,
+        include: leadInclude,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip,
+      }),
+      prisma.lead.count({ where }),
+    ]);
+
+    response.json({
+      items: items.map(serializeLead),
+      meta: buildPageMeta({ page, limit, total }),
+    });
+  },
+);
+
+leadsRouter.get(
+  "/:id",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ params: z.object({ id: cuidSchema }) }),
+  async (request, response) => {
+    const lead = await prisma.lead.findUnique({
+      where: { id: request.params.id },
+      include: leadInclude,
+    });
+
+    if (!lead) {
+      throw new HttpError(404, "Lead nao encontrado");
+    }
+
+    response.json({ item: serializeLead(lead) });
+  },
+);
+
+leadsRouter.post(
+  "/",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({ body: createLeadSchema }),
+  async (request, response) => {
+    const lead = await prisma.lead.create({
+      data: {
+        company: request.body.company,
+        cnpj: request.body.cnpj,
+        contact: request.body.contact,
+        email: request.body.email,
+        phone: request.body.phone,
+        status: request.body.status,
+        valueInCents: toCents(request.body.value),
+        paymentMethod: request.body.paymentMethod,
+        isLite: request.body.isLite ?? false,
+        notes: request.body.notes,
+        sellerId: request.body.sellerId,
+        sdrId: request.body.sdrId,
+        originId: request.body.originId,
+        indicatorId: request.body.indicatorId,
+        wonAt: request.body.wonAt ? new Date(request.body.wonAt) : null,
+        lostAt: request.body.lostAt ? new Date(request.body.lostAt) : null,
+        createdById: request.auth.userId,
+        tasks: request.body.tasks?.length
+          ? {
+              create: request.body.tasks.map((task) => ({
+                title: task.title,
+                type: task.type,
+                done: task.done ?? false,
+                dueDate: task.dueDate ? new Date(task.dueDate) : null,
+                notes: task.notes,
+              })),
+            }
+          : undefined,
+        catalogItems: request.body.catalogItems?.length
+          ? {
+              create: request.body.catalogItems.map((item) => ({
+                catalogItemId: item.catalogItemId,
+                enabled: item.enabled ?? true,
+                setupInCents: toCents(item.setupAmount),
+                recurringInCents: toCents(item.recurringAmount),
+              })),
+            }
+          : undefined,
+      },
+      include: leadInclude,
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "LEAD_CREATE",
+      entityType: "Lead",
+      entityId: lead.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.status(201).json({ item: serializeLead(lead) });
+  },
+);
+
+leadsRouter.patch(
+  "/:id",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: updateLeadSchema,
+  }),
+  async (request, response) => {
+    const existingLead = await prisma.lead.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!existingLead) {
+      throw new HttpError(404, "Lead nao encontrado");
+    }
+
+    const lead = await prisma.lead.update({
+      where: { id: request.params.id },
+      data: {
+        ...("company" in request.body ? { company: request.body.company } : {}),
+        ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
+        ...("contact" in request.body ? { contact: request.body.contact } : {}),
+        ...("email" in request.body ? { email: request.body.email } : {}),
+        ...("phone" in request.body ? { phone: request.body.phone } : {}),
+        ...("status" in request.body ? { status: request.body.status } : {}),
+        ...("value" in request.body ? { valueInCents: toCents(request.body.value) } : {}),
+        ...("paymentMethod" in request.body
+          ? { paymentMethod: request.body.paymentMethod }
+          : {}),
+        ...("isLite" in request.body ? { isLite: request.body.isLite } : {}),
+        ...("notes" in request.body ? { notes: request.body.notes } : {}),
+        ...("sellerId" in request.body ? { sellerId: request.body.sellerId } : {}),
+        ...("sdrId" in request.body ? { sdrId: request.body.sdrId } : {}),
+        ...("originId" in request.body ? { originId: request.body.originId } : {}),
+        ...("indicatorId" in request.body ? { indicatorId: request.body.indicatorId } : {}),
+        ...("wonAt" in request.body
+          ? { wonAt: request.body.wonAt ? new Date(request.body.wonAt) : null }
+          : {}),
+        ...("lostAt" in request.body
+          ? { lostAt: request.body.lostAt ? new Date(request.body.lostAt) : null }
+          : {}),
+      },
+      include: leadInclude,
+    });
+
+    if (Array.isArray(request.body.catalogItems)) {
+      await prisma.$transaction([
+        prisma.leadCatalogItem.deleteMany({
+          where: { leadId: lead.id },
+        }),
+        prisma.leadCatalogItem.createMany({
+          data: request.body.catalogItems.map((item) => ({
+            leadId: lead.id,
+            catalogItemId: item.catalogItemId,
+            enabled: item.enabled ?? true,
+            setupInCents: toCents(item.setupAmount),
+            recurringInCents: toCents(item.recurringAmount),
+          })),
+        }),
+      ]);
+    }
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "LEAD_UPDATE",
+      entityType: "Lead",
+      entityId: lead.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: request.body,
+    });
+
+    const refreshedLead = await prisma.lead.findUnique({
+      where: { id: lead.id },
+      include: leadInclude,
+    });
+
+    response.json({ item: serializeLead(refreshedLead) });
+  },
+);
+
+leadsRouter.delete(
+  "/:id",
+  requireModuleAccess("COMMERCIAL", "manage"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    const lead = await prisma.lead.findUnique({
+      where: { id: request.params.id },
+      include: {
+        tasks: true,
+        comments: true,
+        catalogItems: true,
+      },
+    });
+
+    if (!lead) {
+      throw new HttpError(404, "Lead nao encontrado");
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await moveEntityToTrash({
+        tx,
+        moduleKey: "COMMERCIAL",
+        entityType: "Lead",
+        entityId: lead.id,
+        label: lead.company,
+        payload: {
+          lead: {
+            id: lead.id,
+            company: lead.company,
+            cnpj: lead.cnpj,
+            contact: lead.contact,
+            email: lead.email,
+            phone: lead.phone,
+            status: lead.status,
+            valueInCents: lead.valueInCents,
+            paymentMethod: lead.paymentMethod,
+            isLite: lead.isLite,
+            wonAt: lead.wonAt,
+            lostAt: lead.lostAt,
+            notes: lead.notes,
+            sellerId: lead.sellerId,
+            sdrId: lead.sdrId,
+            originId: lead.originId,
+            indicatorId: lead.indicatorId,
+            createdById: lead.createdById,
+            createdAt: lead.createdAt,
+            updatedAt: lead.updatedAt,
+          },
+          tasks: lead.tasks.map((task) => ({
+            id: task.id,
+            title: task.title,
+            type: task.type,
+            done: task.done,
+            dueDate: task.dueDate,
+            notes: task.notes,
+            createdAt: task.createdAt,
+            updatedAt: task.updatedAt,
+          })),
+          comments: lead.comments.map((comment) => ({
+            id: comment.id,
+            authorUserId: comment.authorUserId,
+            message: comment.message,
+            createdAt: comment.createdAt,
+          })),
+          catalogItems: lead.catalogItems.map((item) => ({
+            id: item.id,
+            catalogItemId: item.catalogItemId,
+            enabled: item.enabled,
+            setupInCents: item.setupInCents,
+            recurringInCents: item.recurringInCents,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
+          })),
+        },
+        deletedById: request.auth.userId,
+      });
+
+      await tx.lead.delete({
+        where: { id: lead.id },
+      });
+    });
+
+    response.status(204).send();
+  },
+);
+
+leadsRouter.post(
+  "/:id/tasks",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: leadTaskInputSchema,
+  }),
+  async (request, response) => {
+    const lead = await prisma.lead.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!lead) {
+      throw new HttpError(404, "Lead nao encontrado");
+    }
+
+    const task = await prisma.leadTask.create({
+      data: {
+        leadId: lead.id,
+        title: request.body.title,
+        type: request.body.type,
+        done: request.body.done ?? false,
+        dueDate: request.body.dueDate ? new Date(request.body.dueDate) : null,
+        notes: request.body.notes,
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "LEAD_TASK_CREATE",
+      entityType: "LeadTask",
+      entityId: task.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: { leadId: lead.id },
+    });
+
+    response.status(201).json({ item: task });
+  },
+);
+
+leadsRouter.post(
+  "/:id/comments",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: leadCommentInputSchema,
+  }),
+  async (request, response) => {
+    const lead = await prisma.lead.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!lead) {
+      throw new HttpError(404, "Lead nao encontrado");
+    }
+
+    const comment = await prisma.leadComment.create({
+      data: {
+        leadId: lead.id,
+        authorUserId: request.auth.userId,
+        message: request.body.message,
+      },
+      include: {
+        author: true,
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "LEAD_COMMENT_CREATE",
+      entityType: "LeadComment",
+      entityId: comment.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: { leadId: lead.id },
+    });
+
+    response.status(201).json({ item: comment });
+  },
+);

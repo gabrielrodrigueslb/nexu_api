@@ -1,0 +1,378 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                  String         @id @default(cuid())
+  name                String
+  email               String         @unique
+  passwordHash        String
+  role                String
+  sector              String
+  accessPresetId      String?
+  isActive            Boolean        @default(true)
+  failedLoginAttempts Int            @default(0)
+  lockedUntil         DateTime?
+  sessionVersion      Int            @default(0)
+  lastLoginAt         DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  accessPreset        AccessPreset?  @relation(fields: [accessPresetId], references: [id], onDelete: SetNull)
+  modulePermissions   UserModulePermission[]
+  refreshTokens       RefreshToken[]
+  auditLogs           AuditLog[]     @relation("ActorAuditLogs")
+  createdLeads        Lead[]         @relation("LeadCreator")
+  soldLeads           Lead[]         @relation("LeadSeller")
+  createdTickets      Ticket[]       @relation("TicketCreator")
+  assignedTickets     Ticket[]       @relation("TicketAssignee")
+  technicalTickets    Ticket[]       @relation("TicketTechnicalAssignee")
+  leadComments        LeadComment[]
+  ticketComments      TicketComment[]
+  ticketTasks         TicketTask[]
+
+  @@index([role, isActive])
+  @@index([sector, isActive])
+  @@index([accessPresetId])
+  @@index([createdAt])
+}
+
+model RefreshToken {
+  id                String   @id @default(cuid())
+  userId            String
+  family            String
+  tokenHash         String   @unique
+  expiresAt         DateTime
+  revokedAt         DateTime?
+  replacedByTokenId String?
+  ipAddress         String?
+  userAgent         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([family])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorUserId String?
+  action     String
+  entityType String
+  entityId   String
+  ipAddress  String?
+  userAgent  String?
+  metadata   String?
+  createdAt  DateTime @default(now())
+  actor      User?    @relation("ActorAuditLogs", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId])
+  @@index([action, createdAt])
+}
+
+model AccessModule {
+  key               String                   @id
+  name              String
+  description       String?
+  active            Boolean                  @default(true)
+  isSystem          Boolean                  @default(true)
+  sortOrder         Int                      @default(0)
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  presetPermissions AccessPresetPermission[]
+  userPermissions   UserModulePermission[]
+  trashItems        TrashItem[]
+
+  @@index([active, sortOrder])
+}
+
+model AccessPreset {
+  id                String                   @id @default(cuid())
+  name              String
+  slug              String                   @unique
+  description       String?
+  role              String
+  isSystem          Boolean                  @default(false)
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  users             User[]
+  modulePermissions AccessPresetPermission[]
+
+  @@index([role, isSystem])
+  @@index([createdAt])
+}
+
+model AccessPresetPermission {
+  id          String       @id @default(cuid())
+  presetId     String
+  moduleKey    String
+  accessLevel String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  preset      AccessPreset @relation(fields: [presetId], references: [id], onDelete: Cascade)
+  module      AccessModule @relation(fields: [moduleKey], references: [key], onDelete: Restrict)
+
+  @@unique([presetId, moduleKey])
+  @@index([moduleKey, accessLevel])
+}
+
+model UserModulePermission {
+  id          String       @id @default(cuid())
+  userId       String
+  moduleKey    String
+  accessLevel String
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module      AccessModule @relation(fields: [moduleKey], references: [key], onDelete: Restrict)
+
+  @@unique([userId, moduleKey])
+  @@index([moduleKey, accessLevel])
+}
+
+model TrashItem {
+  id          String       @id @default(cuid())
+  moduleKey   String
+  entityType  String
+  entityId    String
+  label       String
+  payload     String
+  deletedById String?
+  deletedAt   DateTime     @default(now())
+  module      AccessModule @relation(fields: [moduleKey], references: [key], onDelete: Restrict)
+
+  @@index([moduleKey, deletedAt])
+  @@index([entityType, entityId])
+  @@index([deletedById, deletedAt])
+}
+
+model CatalogItem {
+  id             String            @id @default(cuid())
+  name           String
+  slug           String            @unique
+  type           String
+  active         Boolean           @default(true)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  leadSelections LeadCatalogItem[]
+
+  @@unique([type, name])
+  @@index([type, active])
+}
+
+model Tag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  color     String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([active, createdAt])
+}
+
+model Origin {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  leads     Lead[]
+
+  @@index([active, createdAt])
+}
+
+model Sdr {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  leads     Lead[]
+
+  @@index([active, createdAt])
+}
+
+model Indicator {
+  id           String   @id @default(cuid())
+  name         String
+  docType      String
+  docNumber    String?  @unique
+  contact      String?
+  email        String?
+  percentSetup Int
+  bank         String?
+  agency       String?
+  account      String?
+  pixKey       String?
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  leads        Lead[]
+
+  @@index([active, createdAt])
+  @@index([name])
+}
+
+model Lead {
+  id            String            @id @default(cuid())
+  company       String
+  cnpj          String?
+  contact       String?
+  email         String?
+  phone         String?
+  status        String
+  valueInCents  Int               @default(0)
+  paymentMethod String?
+  isLite        Boolean           @default(false)
+  wonAt         DateTime?
+  lostAt        DateTime?
+  notes         String?
+  sellerId      String?
+  sdrId         String?
+  originId      String?
+  indicatorId   String?
+  createdById   String
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  seller        User?             @relation("LeadSeller", fields: [sellerId], references: [id], onDelete: SetNull)
+  sdr           Sdr?              @relation(fields: [sdrId], references: [id], onDelete: SetNull)
+  origin        Origin?           @relation(fields: [originId], references: [id], onDelete: SetNull)
+  indicator     Indicator?        @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
+  createdBy     User              @relation("LeadCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  tasks         LeadTask[]
+  comments      LeadComment[]
+  catalogItems  LeadCatalogItem[]
+  ticket        Ticket?
+
+  @@index([status, createdAt])
+  @@index([sellerId, status])
+  @@index([sdrId, status])
+  @@index([originId, createdAt])
+  @@index([createdById, createdAt])
+  @@index([company])
+  @@index([cnpj])
+}
+
+model LeadTask {
+  id        String   @id @default(cuid())
+  leadId     String
+  title     String
+  type      String
+  done      Boolean  @default(false)
+  dueDate   DateTime?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([leadId, done, dueDate])
+  @@index([type, done])
+}
+
+model LeadComment {
+  id           String   @id @default(cuid())
+  leadId        String
+  authorUserId String
+  message      String
+  createdAt    DateTime @default(now())
+  lead         Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  author       User     @relation(fields: [authorUserId], references: [id], onDelete: Restrict)
+
+  @@index([leadId, createdAt])
+  @@index([authorUserId, createdAt])
+}
+
+model LeadCatalogItem {
+  id              String      @id @default(cuid())
+  leadId          String
+  catalogItemId   String
+  enabled         Boolean     @default(true)
+  setupInCents    Int         @default(0)
+  recurringInCents Int        @default(0)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  lead            Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  catalogItem     CatalogItem @relation(fields: [catalogItemId], references: [id], onDelete: Restrict)
+
+  @@unique([leadId, catalogItemId])
+  @@index([catalogItemId])
+  @@index([leadId, enabled])
+}
+
+model Ticket {
+  id                 String          @id @default(cuid())
+  code               String          @unique
+  leadId             String?         @unique
+  company            String
+  cnpj               String?
+  contact            String?
+  email              String?
+  phone              String?
+  instance           String?
+  plan               String?
+  paymentMethod      String?
+  installment        String?
+  type               String          @default("novo")
+  status             String
+  csStatus           String?
+  notes              String?
+  cancelReason       String?
+  setupInCents       Int             @default(0)
+  recurringInCents   Int             @default(0)
+  createdById        String
+  assigneeId         String
+  technicalAssigneeId String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  canceledAt         DateTime?
+  completedAt        DateTime?
+  lead               Lead?           @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  createdBy          User            @relation("TicketCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  assignee           User            @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: Restrict)
+  technicalAssignee  User?           @relation("TicketTechnicalAssignee", fields: [technicalAssigneeId], references: [id], onDelete: SetNull)
+  tasks              TicketTask[]
+  comments           TicketComment[]
+
+  @@index([status, createdAt])
+  @@index([assigneeId, status])
+  @@index([technicalAssigneeId, status])
+  @@index([type, status])
+  @@index([company])
+}
+
+model TicketTask {
+  id           String   @id @default(cuid())
+  ticketId      String
+  assigneeId    String?
+  title        String
+  done         Boolean  @default(false)
+  dueDate      DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  assignee     User?    @relation(fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  @@index([ticketId, done, dueDate])
+  @@index([assigneeId, done])
+}
+
+model TicketComment {
+  id           String   @id @default(cuid())
+  ticketId      String
+  authorUserId String
+  message      String
+  createdAt    DateTime @default(now())
+  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author       User     @relation(fields: [authorUserId], references: [id], onDelete: Restrict)
+
+  @@index([ticketId, createdAt])
+  @@index([authorUserId, createdAt])
+}
