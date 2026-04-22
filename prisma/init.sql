@@ -139,15 +139,6 @@ CREATE TABLE "Origin" (
 );
 
 -- CreateTable
-CREATE TABLE "Sdr" (
-    "id" TEXT NOT NULL PRIMARY KEY,
-    "name" TEXT NOT NULL,
-    "active" BOOLEAN NOT NULL DEFAULT true,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" DATETIME NOT NULL
-);
-
--- CreateTable
 CREATE TABLE "Indicator" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "name" TEXT NOT NULL,
@@ -188,10 +179,43 @@ CREATE TABLE "Lead" (
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Lead_sellerId_fkey" FOREIGN KEY ("sellerId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
-    CONSTRAINT "Lead_sdrId_fkey" FOREIGN KEY ("sdrId") REFERENCES "Sdr" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "Lead_sdrId_fkey" FOREIGN KEY ("sdrId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Lead_originId_fkey" FOREIGN KEY ("originId") REFERENCES "Origin" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Lead_indicatorId_fkey" FOREIGN KEY ("indicatorId") REFERENCES "Indicator" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
     CONSTRAINT "Lead_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE "IndicatorPayment" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "leadId" TEXT NOT NULL,
+    "indicatorId" TEXT,
+    "indicatorNameSnapshot" TEXT NOT NULL,
+    "leadCompanySnapshot" TEXT NOT NULL,
+    "amountInCents" INTEGER NOT NULL DEFAULT 0,
+    "status" TEXT NOT NULL DEFAULT 'pending',
+    "dueDate" DATETIME,
+    "paidAt" DATETIME,
+    "notes" TEXT,
+    "paidByUserId" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "IndicatorPayment_leadId_fkey" FOREIGN KEY ("leadId") REFERENCES "Lead" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "IndicatorPayment_indicatorId_fkey" FOREIGN KEY ("indicatorId") REFERENCES "Indicator" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "IndicatorPayment_paidByUserId_fkey" FOREIGN KEY ("paidByUserId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE "FinanceFlowSnapshot" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "referenceDate" DATETIME,
+    "importedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "caixaJson" TEXT,
+    "expensesJson" TEXT NOT NULL DEFAULT '[]',
+    "revenuesJson" TEXT NOT NULL DEFAULT '[]',
+    "overdueJson" TEXT NOT NULL DEFAULT '[]',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
 );
 
 -- CreateTable
@@ -383,12 +407,6 @@ CREATE UNIQUE INDEX "Origin_name_key" ON "Origin"("name");
 CREATE INDEX "Origin_active_createdAt_idx" ON "Origin"("active", "createdAt");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Sdr_name_key" ON "Sdr"("name");
-
--- CreateIndex
-CREATE INDEX "Sdr_active_createdAt_idx" ON "Sdr"("active", "createdAt");
-
--- CreateIndex
 CREATE UNIQUE INDEX "Indicator_docNumber_key" ON "Indicator"("docNumber");
 
 -- CreateIndex
@@ -417,6 +435,24 @@ CREATE INDEX "Lead_company_idx" ON "Lead"("company");
 
 -- CreateIndex
 CREATE INDEX "Lead_cnpj_idx" ON "Lead"("cnpj");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "IndicatorPayment_leadId_key" ON "IndicatorPayment"("leadId");
+
+-- CreateIndex
+CREATE INDEX "IndicatorPayment_status_dueDate_idx" ON "IndicatorPayment"("status", "dueDate");
+
+-- CreateIndex
+CREATE INDEX "IndicatorPayment_indicatorId_status_idx" ON "IndicatorPayment"("indicatorId", "status");
+
+-- CreateIndex
+CREATE INDEX "IndicatorPayment_paidByUserId_paidAt_idx" ON "IndicatorPayment"("paidByUserId", "paidAt");
+
+-- CreateIndex
+CREATE INDEX "FinanceFlowSnapshot_importedAt_idx" ON "FinanceFlowSnapshot"("importedAt");
+
+-- CreateIndex
+CREATE INDEX "FinanceFlowSnapshot_createdAt_idx" ON "FinanceFlowSnapshot"("createdAt");
 
 -- CreateIndex
 CREATE INDEX "LeadTask_leadId_done_dueDate_idx" ON "LeadTask"("leadId", "done", "dueDate");

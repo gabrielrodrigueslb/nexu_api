@@ -1,7 +1,10 @@
 import crypto from "node:crypto";
-import { SignJWT, jwtVerify } from "jose";
 
 import { env } from "../config/env.js";
+
+globalThis.crypto ??= crypto.webcrypto;
+
+const { SignJWT, jwtVerify } = await import("jose");
 
 const accessSecret = new TextEncoder().encode(env.JWT_ACCESS_SECRET);
 

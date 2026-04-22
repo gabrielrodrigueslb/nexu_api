@@ -71,7 +71,35 @@ const ticketInclude = {
   createdBy: true,
   assignee: true,
   technicalAssignee: true,
-  lead: true,
+  lead: {
+    include: {
+      seller: true,
+      sdr: true,
+      origin: true,
+      indicator: true,
+      catalogItems: {
+        include: {
+          catalogItem: true,
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+      },
+      comments: {
+        include: {
+          author: true,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      },
+      tasks: {
+        orderBy: {
+          createdAt: "asc",
+        },
+      },
+    },
+  },
   tasks: {
     include: {
       assignee: true,
@@ -91,6 +119,248 @@ const ticketInclude = {
 };
 
 ticketsRouter.use(authenticate);
+
+ticketsRouter.get(
+  "/closed-clients",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ query: listTicketsQuerySchema }),
+  async (request, response) => {
+    const { page, limit, skip } = getPagination(request.query);
+    const where = {
+      ...(request.query.q
+        ? {
+            OR: [
+              { code: { contains: request.query.q } },
+              { company: { contains: request.query.q } },
+              { cnpj: { contains: request.query.q } },
+            ],
+          }
+        : {}),
+      ...(request.query.status ? { status: request.query.status } : {}),
+      ...(request.query.type ? { type: request.query.type } : {}),
+      ...(request.query.assigneeId ? { assigneeId: request.query.assigneeId } : {}),
+      ...(request.query.technicalAssigneeId
+        ? { technicalAssigneeId: request.query.technicalAssigneeId }
+        : {}),
+      ...((request.query.from || request.query.to) && {
+        createdAt: {
+          ...(request.query.from ? { gte: new Date(request.query.from) } : {}),
+          ...(request.query.to ? { lte: new Date(request.query.to) } : {}),
+        },
+      }),
+    };
+
+    const [items, total] = await prisma.$transaction([
+      prisma.ticket.findMany({
+        where,
+        include: ticketInclude,
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip,
+      }),
+      prisma.ticket.count({ where }),
+    ]);
+
+    response.json({
+      items: items.map(serializeTicket),
+      meta: buildPageMeta({ page, limit, total }),
+    });
+  },
+);
+
+ticketsRouter.get(
+  "/closed-clients/:id",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ params: z.object({ id: cuidSchema }) }),
+  async (request, response) => {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: request.params.id },
+      include: ticketInclude,
+    });
+
+    if (!ticket) {
+      throw new HttpError(404, "Ticket nÃ£o encontrado");
+    }
+
+    response.json({ item: serializeTicket(ticket) });
+  },
+);
+
+ticketsRouter.patch(
+  "/closed-clients/:id",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: updateTicketSchema.pick({
+      status: true,
+      csStatus: true,
+      notes: true,
+      assigneeId: true,
+      technicalAssigneeId: true,
+    }),
+  }),
+  async (request, response) => {
+    const existingTicket = await prisma.ticket.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!existingTicket) {
+      throw new HttpError(404, "Ticket nÃ£o encontrado");
+    }
+
+    const nextStatus = request.body.status || existingTicket.status;
+    const ticket = await prisma.ticket.update({
+      where: { id: existingTicket.id },
+      data: {
+        ...("status" in request.body ? { status: request.body.status } : {}),
+        ...("csStatus" in request.body ? { csStatus: request.body.csStatus } : {}),
+        ...("notes" in request.body ? { notes: request.body.notes } : {}),
+        ...("assigneeId" in request.body ? { assigneeId: request.body.assigneeId } : {}),
+        ...("technicalAssigneeId" in request.body
+          ? { technicalAssigneeId: request.body.technicalAssigneeId }
+          : {}),
+        ...(nextStatus === "concluido" && !existingTicket.completedAt
+          ? { completedAt: new Date() }
+          : {}),
+        ...(nextStatus === "cancelado" && !existingTicket.canceledAt
+          ? { canceledAt: new Date() }
+          : {}),
+      },
+      include: ticketInclude,
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "COMMERCIAL_TICKET_UPDATE",
+      entityType: "Ticket",
+      entityId: ticket.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: request.body,
+    });
+
+    response.json({ item: serializeTicket(ticket) });
+  },
+);
+
+ticketsRouter.patch(
+  "/closed-clients/:id/confirm-payment",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    const existingTicket = await prisma.ticket.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!existingTicket) {
+      throw new HttpError(404, "Ticket nÃ£o encontrado");
+    }
+
+    const ticket = await prisma.ticket.update({
+      where: { id: existingTicket.id },
+      data: {
+        status: "pagamento_confirmado",
+        csStatus: existingTicket.csStatus || "Briefing",
+      },
+      include: ticketInclude,
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "COMMERCIAL_TICKET_PAYMENT_CONFIRM",
+      entityType: "Ticket",
+      entityId: ticket.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.json({ item: serializeTicket(ticket) });
+  },
+);
+
+ticketsRouter.patch(
+  "/closed-clients/:id/approve-implementation",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    const existingTicket = await prisma.ticket.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!existingTicket) {
+      throw new HttpError(404, "Ticket não encontrado");
+    }
+
+    if (existingTicket.status !== "pagamento_confirmado") {
+      throw new HttpError(400, "Confirme o pagamento antes de aprovar a implantação");
+    }
+
+    const ticket = await prisma.ticket.update({
+      where: { id: existingTicket.id },
+      data: {
+        status: "em_implantacao",
+        csStatus: existingTicket.csStatus || "Briefing",
+      },
+      include: ticketInclude,
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "COMMERCIAL_TICKET_IMPLEMENTATION_APPROVE",
+      entityType: "Ticket",
+      entityId: ticket.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.json({ item: serializeTicket(ticket) });
+  },
+);
+
+ticketsRouter.post(
+  "/closed-clients/:id/comments",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: ticketCommentSchema,
+  }),
+  async (request, response) => {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!ticket) {
+      throw new HttpError(404, "Ticket não encontrado");
+    }
+
+    const comment = await prisma.ticketComment.create({
+      data: {
+        ticketId: ticket.id,
+        authorUserId: request.auth.userId,
+        message: request.body.message,
+      },
+      include: {
+        author: true,
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "COMMERCIAL_TICKET_COMMENT_CREATE",
+      entityType: "TicketComment",
+      entityId: comment.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: { ticketId: ticket.id },
+    });
+
+    response.status(201).json({ item: comment });
+  },
+);
 
 ticketsRouter.get(
   "/",

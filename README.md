@@ -19,7 +19,8 @@ API em `Node.js ESM + Express + Prisma` com autenticacao `Bearer JWT`, refresh t
 
 ## Subir localmente
 
-1. Copie `.env.example` para `.env`
+1. Opcional: copie `.env.example` para `.env`
+   Sem `.env`, a API e o Prisma usam `file:./dev.db` como `DATABASE_URL` padrao para desenvolvimento local
 2. Instale dependencias:
 
 ```bash

@@ -21,6 +21,8 @@ export function serializeUser(user) {
 function serializeLeadReference(lead) {
   if (!lead) return null;
 
+  const metadata = parseLeadMetadata(lead.notes);
+
   return {
     id: lead.id,
     company: lead.company,
@@ -36,6 +38,27 @@ function serializeLeadReference(lead) {
     lostAt: lead.lostAt,
     createdAt: lead.createdAt,
     updatedAt: lead.updatedAt,
+    installment: metadata.installment || null,
+    consultant: metadata.consultant || null,
+    validUntil: metadata.validUntil || null,
+    agents: metadata.agents || 0,
+    supervisors: metadata.supervisors || 0,
+    admins: metadata.admins || 0,
+    observations: metadata.observations || null,
+    representativeId: metadata.representativeId || null,
+    representativeCommission: metadata.representativeCommission || 0,
+    passThroughAmount: metadata.passThroughAmount || 0,
+    lossReason: metadata.lossReason || null,
+    seller: serializeUser(lead.seller),
+    sdr: serializeUser(lead.sdr),
+    origin: lead.origin || null,
+    indicator: lead.indicator || null,
+    tasks: lead.tasks || [],
+    comments: lead.comments?.map((comment) => ({
+      ...comment,
+      author: serializeUser(comment.author),
+    })) || [],
+    catalogItems: lead.catalogItems || [],
   };
 }
 

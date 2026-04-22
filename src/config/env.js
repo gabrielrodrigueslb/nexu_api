@@ -1,14 +1,40 @@
 import dotenv from "dotenv";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const prismaDirectory = path.resolve(__dirname, "../../prisma");
+
+function normalizeDatabaseUrl(databaseUrl) {
+  if (!databaseUrl?.startsWith("file:")) {
+    return databaseUrl;
+  }
+
+  const sqlitePath = databaseUrl.slice("file:".length);
+
+  if (!sqlitePath) {
+    return databaseUrl;
+  }
+
+  const resolvedPath = path.isAbsolute(sqlitePath)
+    ? sqlitePath
+    : path.resolve(prismaDirectory, sqlitePath);
+
+  return `file:${resolvedPath.replace(/\\/g, "/")}`;
+}
+
+process.env.DATABASE_URL = normalizeDatabaseUrl(process.env.DATABASE_URL || "file:./dev.db");
 
 const isProduction = process.env.NODE_ENV === "production";
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3333),
-  DATABASE_URL: z.string().min(1).default("file:./dev.db"),
+  DATABASE_URL: z.string().min(1).default(process.env.DATABASE_URL),
   CORS_ORIGINS: z.string().default("http://localhost:3000"),
   TRUST_PROXY: z.coerce.number().int().min(0).default(0),
   JWT_ISSUER: z.string().min(1).default("nexu-api"),
@@ -37,6 +63,9 @@ if (isProduction && parsed.data.JWT_ACCESS_SECRET.includes("desenvolvimento-apen
   console.error("JWT_ACCESS_SECRET precisa ser trocada em producao.");
   process.exit(1);
 }
+
+process.env.NODE_ENV ??= parsed.data.NODE_ENV;
+process.env.DATABASE_URL ??= parsed.data.DATABASE_URL;
 
 export const env = {
   ...parsed.data,

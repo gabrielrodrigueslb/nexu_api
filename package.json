@@ -4,16 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "nodemon --watch src --ext js,json --signal SIGTERM src/server.js",
-    "start": "node src/server.js",
+    "dev": "nodemon --watch src --ext js,json --signal SIGTERM src/bootstrap.js",
+    "start": "node src/bootstrap.js",
     "prisma:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:init": "node prisma/init-db.js",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed"
-  },
-  "prisma": {
-    "seed": "node prisma/seed.js"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

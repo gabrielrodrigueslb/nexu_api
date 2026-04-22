@@ -36,6 +36,9 @@ model User {
   ticketComments      TicketComment[]
   ticketTasks         TicketTask[]
   indicatorPayments   IndicatorPayment[] @relation("IndicatorPaymentPaidBy")
+  createdDevTickets   DevTicket[]        @relation("DevTicketCreator")
+  assignedDevTickets  DevTicket[]        @relation("DevTicketAssignee")
+  devTicketComments   DevTicketComment[]
 
   @@index([role, isActive])
   @@index([sector, isActive])
@@ -277,6 +280,21 @@ model IndicatorPayment {
   @@index([paidByUserId, paidAt])
 }
 
+model FinanceFlowSnapshot {
+  id            String   @id @default(cuid())
+  referenceDate DateTime?
+  importedAt    DateTime @default(now())
+  caixaJson     String?
+  expensesJson  String   @default("[]")
+  revenuesJson  String   @default("[]")
+  overdueJson   String   @default("[]")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([importedAt])
+  @@index([createdAt])
+}
+
 model LeadTask {
   id        String   @id @default(cuid())
   leadId     String
@@ -388,6 +406,83 @@ model TicketComment {
   createdAt    DateTime @default(now())
   ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   author       User     @relation(fields: [authorUserId], references: [id], onDelete: Restrict)
+
+  @@index([ticketId, createdAt])
+  @@index([authorUserId, createdAt])
+}
+
+model DevSprint {
+  id        String      @id @default(cuid())
+  name      String
+  goal      String?
+  startDate DateTime
+  endDate   DateTime
+  closed    Boolean     @default(false)
+  closedAt  DateTime?
+  createdAt DateTime    @default(now())
+  updatedAt DateTime    @updatedAt
+  tickets   DevTicket[]
+
+  @@index([closed, startDate])
+  @@index([createdAt])
+}
+
+model DevTicket {
+  id             Int                @id @default(autoincrement())
+  proto          String             @unique
+  title          String
+  category       String
+  devType        String
+  devStatus      String
+  complexity     String             @default("Media")
+  score          Int                @default(0)
+  totalPts       Int                @default(0)
+  createdById    String
+  assigneeId     String?
+  sprintId       String?
+  parentId       Int?
+  clientName     String?
+  protoExt       String?
+  instance       String?
+  cnpj           String?
+  clientPhone    String?
+  description    String
+  tagsJson       String             @default("[]")
+  criteriaJson   String             @default("{}")
+  historyJson    String             @default("[]")
+  incident       Boolean            @default(false)
+  compliment     Boolean            @default(false)
+  docDone        Boolean            @default(false)
+  prodBug        Boolean            @default(false)
+  reopened       Boolean            @default(false)
+  criticalBug    Boolean            @default(false)
+  createdAt      DateTime           @default(now())
+  startDate      DateTime?
+  deadline       DateTime?
+  resolvedAt     DateTime?
+  updatedAt      DateTime           @updatedAt
+  createdBy      User               @relation("DevTicketCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  assignee       User?              @relation("DevTicketAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+  sprint         DevSprint?         @relation(fields: [sprintId], references: [id], onDelete: SetNull)
+  parent         DevTicket?         @relation("DevTicketParent", fields: [parentId], references: [id], onDelete: SetNull)
+  children       DevTicket[]        @relation("DevTicketParent")
+  comments       DevTicketComment[]
+
+  @@index([devStatus, createdAt])
+  @@index([devType, devStatus])
+  @@index([assigneeId, devStatus])
+  @@index([sprintId, devStatus])
+  @@index([resolvedAt])
+}
+
+model DevTicketComment {
+  id           String    @id @default(cuid())
+  ticketId      Int
+  authorUserId String
+  message      String
+  createdAt    DateTime  @default(now())
+  ticket       DevTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  author       User      @relation(fields: [authorUserId], references: [id], onDelete: Restrict)
 
   @@index([ticketId, createdAt])
   @@index([authorUserId, createdAt])
