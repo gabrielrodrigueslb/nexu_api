@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 
+import { compareAccessLevel, resolveUserAccess } from "../lib/access-control.js";
 import { writeAuditLog } from "../lib/audit.js";
 import { CATALOG_TYPES, DOC_TYPES } from "../lib/constants.js";
 import { HttpError } from "../lib/http-error.js";
@@ -48,6 +49,63 @@ const indicatorSchema = z.object({
 });
 
 catalogRouter.use(authenticate);
+
+async function ensureAnyModuleAccess(request, moduleKeys, requiredLevel = "view") {
+  if (request.auth.role === "admin") {
+    return;
+  }
+
+  const access = request.auth.access || (await resolveUserAccess(request.auth.userId));
+  request.auth.access = access;
+
+  const canAccess = moduleKeys.some((moduleKey) =>
+    compareAccessLevel(access?.permissionMap?.[moduleKey] || "none", requiredLevel),
+  );
+
+  if (!canAccess) {
+    throw new HttpError(403, "Sem permissão para consultar estes dados");
+  }
+}
+
+catalogRouter.get("/lookups", async (request, response) => {
+  await ensureAnyModuleAccess(request, ["CADASTROS", "COMMERCIAL", "DASHBOARD"], "view");
+
+  const [origins, sdrs, indicators, items] = await prisma.$transaction([
+    prisma.origin.findMany({
+      where: { active: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.user.findMany({
+      where: { isActive: true, role: "sdr" },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+      },
+    }),
+    prisma.indicator.findMany({
+      where: { active: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.catalogItem.findMany({
+      where: { active: true },
+      orderBy: [{ type: "asc" }, { name: "asc" }],
+    }),
+  ]);
+
+  response.json({
+    origins,
+    sdrs: sdrs.map((item) => ({
+      id: item.id,
+      name: item.name,
+      active: item.isActive,
+    })),
+    indicators,
+    products: items.filter((item) => item.type === "PRODUCT"),
+    integrations: items.filter((item) => item.type === "INTEGRATION"),
+  });
+});
 
 catalogRouter.get("/items", requireModuleAccess("CADASTROS", "view"), async (request, response) => {
   const filters = z
@@ -108,7 +166,7 @@ catalogRouter.patch(
     });
 
     if (!current) {
-      throw new HttpError(404, "Registro nao encontrado");
+      throw new HttpError(404, "Registro não encontrado");
     }
 
     const type = request.body.type || current.type;
@@ -154,13 +212,13 @@ catalogRouter.delete(
     });
 
     if (!item) {
-      throw new HttpError(404, "Registro nao encontrado");
+      throw new HttpError(404, "Registro não encontrado");
     }
 
     if (item.leadSelections.length) {
       throw new HttpError(
         409,
-        "Este item esta vinculado a leads e nao pode ser enviado para a lixeira",
+        "Este item está vinculado a leads e não pode ser enviado para a lixeira",
       );
     }
 
@@ -240,7 +298,7 @@ function mountSimpleCrud({ path, model, entityType, createAction, updateAction, 
       });
 
       if (!existing) {
-        throw new HttpError(404, "Registro nao encontrado");
+        throw new HttpError(404, "Registro não encontrado");
       }
 
       const item = await prisma[model].update({
@@ -274,7 +332,7 @@ function mountSimpleCrud({ path, model, entityType, createAction, updateAction, 
       });
 
       if (!existing) {
-        throw new HttpError(404, "Registro nao encontrado");
+        throw new HttpError(404, "Registro não encontrado");
       }
 
       await prisma.$transaction(async (tx) => {
@@ -313,15 +371,6 @@ mountSimpleCrud({
   entityType: "Origin",
   createAction: "ORIGIN_CREATE",
   updateAction: "ORIGIN_UPDATE",
-  schema: simpleActiveNameSchema,
-});
-
-mountSimpleCrud({
-  path: "/sdrs",
-  model: "sdr",
-  entityType: "Sdr",
-  createAction: "SDR_CREATE",
-  updateAction: "SDR_UPDATE",
   schema: simpleActiveNameSchema,
 });
 

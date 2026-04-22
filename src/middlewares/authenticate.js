@@ -9,7 +9,7 @@ export async function authenticate(request, _response, next) {
     const authorization = request.headers.authorization;
 
     if (!authorization?.startsWith("Bearer ")) {
-      throw new HttpError(401, "Token Bearer ausente ou invalido");
+      throw new HttpError(401, "Token Bearer ausente ou inválido");
     }
 
     const token = authorization.slice("Bearer ".length).trim();
@@ -20,11 +20,11 @@ export async function authenticate(request, _response, next) {
     });
 
     if (!user || !user.isActive) {
-      throw new HttpError(401, "Usuario invalido ou desativado");
+      throw new HttpError(401, "Usuário inválido ou desativado");
     }
 
     if (Number(payload.sessionVersion) !== user.sessionVersion) {
-      throw new HttpError(401, "Sessao invalida");
+      throw new HttpError(401, "Sessão inválida");
     }
 
     request.auth = {
@@ -35,6 +35,6 @@ export async function authenticate(request, _response, next) {
 
     next();
   } catch (error) {
-    next(error.status ? error : new HttpError(401, "Nao autorizado"));
+    next(error.status ? error : new HttpError(401, "Não autorizado"));
   }
 }

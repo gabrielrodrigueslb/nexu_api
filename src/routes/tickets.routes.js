@@ -151,7 +151,7 @@ ticketsRouter.get(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket nao encontrado");
+      throw new HttpError(404, "Ticket não encontrado");
     }
 
     response.json({ item: serializeTicket(ticket) });
@@ -228,7 +228,7 @@ ticketsRouter.patch(
     });
 
     if (!existingTicket) {
-      throw new HttpError(404, "Ticket nao encontrado");
+      throw new HttpError(404, "Ticket não encontrado");
     }
 
     const nextStatus = request.body.status || existingTicket.status;
@@ -305,7 +305,7 @@ ticketsRouter.delete(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket nao encontrado");
+      throw new HttpError(404, "Ticket não encontrado");
     }
 
     await prisma.$transaction(async (tx) => {
@@ -385,7 +385,7 @@ ticketsRouter.post(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket nao encontrado");
+      throw new HttpError(404, "Ticket não encontrado");
     }
 
     const task = await prisma.ticketTask.create({
@@ -428,7 +428,7 @@ ticketsRouter.post(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket nao encontrado");
+      throw new HttpError(404, "Ticket não encontrado");
     }
 
     const comment = await prisma.ticketComment.create({

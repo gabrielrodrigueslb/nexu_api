@@ -142,6 +142,19 @@ async function main() {
     ],
   });
 
+  const sdr = await upsertUser({
+    name: "Marina",
+    email: "marina@nexu.com.br",
+    role: "sdr",
+    sector: "Comercial",
+    password: "Nexu@12345",
+    accessPresetId: basicCommercialPreset?.id,
+    modulePermissions: [
+      { moduleKey: "COMMERCIAL", accessLevel: "view" },
+      { moduleKey: "DASHBOARD", accessLevel: "view" },
+    ],
+  });
+
   await Promise.all([
     prisma.origin.upsert({
       where: { name: "Inbound" },
@@ -152,16 +165,6 @@ async function main() {
       where: { name: "Indicacao" },
       update: { active: true },
       create: { name: "Indicacao", active: true },
-    }),
-    prisma.sdr.upsert({
-      where: { name: "Marina" },
-      update: { active: true },
-      create: { name: "Marina", active: true },
-    }),
-    prisma.sdr.upsert({
-      where: { name: "Leo" },
-      update: { active: true },
-      create: { name: "Leo", active: true },
     }),
     prisma.tag.upsert({
       where: { name: "Urgente" },
@@ -213,8 +216,6 @@ async function main() {
   ]);
 
   const inboundOrigin = await prisma.origin.findUnique({ where: { name: "Inbound" } });
-  const marina = await prisma.sdr.findUnique({ where: { name: "Marina" } });
-
   const existingLead = await prisma.lead.findFirst({
     where: { company: "Atlas Energia" },
   });
@@ -233,7 +234,7 @@ async function main() {
         paymentMethod: "Cartao",
         isLite: true,
         sellerId: seller.id,
-        sdrId: marina?.id,
+        sdrId: sdr.id,
         originId: inboundOrigin?.id,
         createdById: admin.id,
         tasks: {

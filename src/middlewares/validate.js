@@ -26,7 +26,7 @@ export function validate({ body, query, params }) {
 
       next();
     } catch (error) {
-      next(new HttpError(422, "Falha de validacao", error.flatten?.() || undefined));
+      next(new HttpError(422, "Falha de validação", error.flatten?.() || undefined));
     }
   };
 }

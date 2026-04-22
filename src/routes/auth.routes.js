@@ -96,14 +96,14 @@ authRouter.post("/login", authLimiter, validate({ body: loginSchema }), async (r
     where: { email },
   });
 
-  const invalidCredentials = new HttpError(401, "Credenciais invalidas");
+  const invalidCredentials = new HttpError(401, "Credenciais inválidas");
 
   if (!user || !user.isActive) {
     throw invalidCredentials;
   }
 
   if (user.lockedUntil && user.lockedUntil > new Date()) {
-    throw new HttpError(423, "Conta temporariamente bloqueada por excesso de tentativas");
+      throw new HttpError(423, "Conta temporariamente bloqueada por excesso de tentativas");
   }
 
   const isValidPassword = await verifyPassword(request.body.password, user.passwordHash);
@@ -167,7 +167,7 @@ authRouter.post("/refresh", validate({ body: refreshSchema }), async (request, r
   });
 
   if (!currentToken) {
-    throw new HttpError(401, "Refresh token invalido");
+    throw new HttpError(401, "Refresh token inválido");
   }
 
   if (currentToken.revokedAt || currentToken.expiresAt <= new Date()) {
@@ -177,7 +177,7 @@ authRouter.post("/refresh", validate({ body: refreshSchema }), async (request, r
 
   if (!currentToken.user.isActive) {
     await revokeTokenFamily(currentToken.family);
-    throw new HttpError(401, "Usuario desativado");
+    throw new HttpError(401, "Usuário desativado");
   }
 
   const nextRefreshToken = generateOpaqueToken();
@@ -258,7 +258,7 @@ authRouter.post(
     });
 
     if (!user) {
-      throw new HttpError(404, "Usuario nao encontrado");
+      throw new HttpError(404, "Usuário não encontrado");
     }
 
     const isValidPassword = await verifyPassword(
@@ -267,7 +267,7 @@ authRouter.post(
     );
 
     if (!isValidPassword) {
-      throw new HttpError(401, "Senha atual invalida");
+      throw new HttpError(401, "Senha atual inválida");
     }
 
     await prisma.$transaction(async (tx) => {

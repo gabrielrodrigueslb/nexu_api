@@ -5,7 +5,7 @@ export function requireModuleAccess(moduleKey, requiredAccessLevel = "view") {
   return async (request, _response, next) => {
     try {
       if (!request.auth?.userId) {
-        throw new HttpError(401, "Nao autenticado");
+        throw new HttpError(401, "Não autenticado");
       }
 
       if (request.auth.role === "admin") {
@@ -20,7 +20,7 @@ export function requireModuleAccess(moduleKey, requiredAccessLevel = "view") {
         request.auth.access?.permissionMap?.[moduleKey] || "none";
 
       if (!compareAccessLevel(currentAccessLevel, requiredAccessLevel)) {
-        throw new HttpError(403, "Sem permissao para acessar este modulo");
+        throw new HttpError(403, "Sem permissão para acessar este módulo");
       }
 
       next();

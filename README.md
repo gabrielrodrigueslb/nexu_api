@@ -10,11 +10,11 @@ API em `Node.js ESM + Express + Prisma` com autenticacao `Bearer JWT`, refresh t
 - Lock temporario de conta apos excesso de tentativas
 - Auditoria de eventos sensiveis
 - Validacao de payloads com Zod
-- Prisma com indices para usuarios, sessoes, leads e tickets
-- CRUD inicial para usuarios, cadastros, leads e tickets
+- Prisma com índices para usuários, sessões, leads e tickets
+- CRUD inicial para usuários, cadastros, leads e tickets
 - Controle de acesso por modulo com cargos base `basic`, `leader` e `admin`
 - Presets de acesso padrao e customizaveis
-- Override de permissao por usuario
+- Override de permissão por usuário
 - Lixeira com restauracao e exclusao permanente separadas por permissao
 
 ## Subir localmente
@@ -53,9 +53,9 @@ npm run dev
 
 ## Cargos e acesso
 
-- `basic`: acesso somente aos modulos liberados; por padrao nao exclui itens
-- `leader`: pode receber modulos em `manage` e acessar a lixeira para restaurar itens, mas nao fazer exclusao permanente
-- `admin`: acesso total a todos os modulos, usuarios, presets, lixeira e exclusao permanente
+- `basic`: acesso somente aos módulos liberados; por padrão não exclui itens
+- `leader`: pode receber módulos em `manage` e acessar a lixeira para restaurar itens, mas não fazer exclusão permanente
+- `admin`: acesso total a todos os módulos, usuários, presets, lixeira e exclusão permanente
 
 ## Modulos padrao
 
@@ -105,7 +105,7 @@ curl -X POST http://localhost:3333/api/auth/login \
   -d "{\"email\":\"gabriel@nexu.com.br\",\"password\":\"Nexu@12345\"}"
 ```
 
-## Observacoes de seguranca
+## Observações de segurança
 
 - Troque `JWT_ACCESS_SECRET` antes de producao
 - Em producao, prefira banco gerenciado e rotacao de segredos

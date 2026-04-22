@@ -4,6 +4,7 @@ import { z } from "zod";
 import { writeAuditLog } from "../lib/audit.js";
 import { LEAD_STATUSES, LEAD_TASK_TYPES } from "../lib/constants.js";
 import { HttpError } from "../lib/http-error.js";
+import { buildLeadMetadataNotes, parseLeadMetadata } from "../lib/lead-metadata.js";
 import { toCents } from "../lib/money.js";
 import { buildPageMeta, getPagination } from "../lib/pagination.js";
 import { prisma } from "../lib/prisma.js";
@@ -47,14 +48,24 @@ const createLeadSchema = z.object({
   status: leadStatusSchema,
   value: z.coerce.number().min(0),
   paymentMethod: z.string().trim().max(40).optional().nullable(),
+  installment: z.string().trim().max(40).optional().nullable(),
   isLite: z.boolean().optional(),
-  notes: z.string().trim().max(4000).optional().nullable(),
   sellerId: cuidSchema.optional().nullable(),
   sdrId: cuidSchema.optional().nullable(),
   originId: cuidSchema.optional().nullable(),
   indicatorId: cuidSchema.optional().nullable(),
   wonAt: z.string().datetime().optional().nullable(),
   lostAt: z.string().datetime().optional().nullable(),
+  consultant: z.string().trim().max(120).optional().nullable(),
+  validUntil: z.string().trim().max(20).optional().nullable(),
+  agents: z.coerce.number().int().min(0).optional(),
+  supervisors: z.coerce.number().int().min(0).optional(),
+  admins: z.coerce.number().int().min(0).optional(),
+  observations: z.string().trim().max(4000).optional().nullable(),
+  representativeId: cuidSchema.optional().nullable(),
+  representativeCommission: z.coerce.number().min(0).optional(),
+  passThroughAmount: z.coerce.number().min(0).optional(),
+  lossReason: z.string().trim().max(1000).optional().nullable(),
   tasks: z.array(leadTaskInputSchema).optional(),
   catalogItems: z.array(leadCatalogItemSchema).optional(),
 });
@@ -102,6 +113,66 @@ const leadInclude = {
 };
 
 leadsRouter.use(authenticate);
+
+function sumCatalogItems(items = []) {
+  return items.reduce(
+    (sum, item) => ({
+      setupAmount: sum.setupAmount + (item.enabled === false ? 0 : item.setupAmount || 0),
+      recurringAmount:
+        sum.recurringAmount + (item.enabled === false ? 0 : item.recurringAmount || 0),
+    }),
+    { setupAmount: 0, recurringAmount: 0 },
+  );
+}
+
+async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) {
+  const totals = sumCatalogItems(catalogItems);
+  const assigneeId = lead.sellerId || actorUserId;
+
+  if (lead.ticket?.id) {
+    return tx.ticket.update({
+      where: { id: lead.ticket.id },
+      data: {
+        company: lead.company,
+        cnpj: lead.cnpj,
+        contact: lead.contact,
+        email: lead.email,
+        phone: lead.phone,
+        plan: lead.isLite ? "Lite" : "Profissional",
+        paymentMethod: lead.paymentMethod,
+        setupInCents: toCents(totals.setupAmount),
+        recurringInCents: toCents(totals.recurringAmount),
+        assigneeId,
+      },
+    });
+  }
+
+  const code = `COM-${Date.now().toString().slice(-6)}-${Math.random()
+    .toString(36)
+    .slice(2, 5)
+    .toUpperCase()}`;
+
+  return tx.ticket.create({
+    data: {
+      code,
+      leadId: lead.id,
+      company: lead.company,
+      cnpj: lead.cnpj,
+      contact: lead.contact,
+      email: lead.email,
+      phone: lead.phone,
+      plan: lead.isLite ? "Lite" : "Profissional",
+      paymentMethod: lead.paymentMethod,
+      installment: parseLeadMetadata(lead.notes).installment || null,
+      type: "novo",
+      status: "pendente_financeiro",
+      setupInCents: toCents(totals.setupAmount),
+      recurringInCents: toCents(totals.recurringAmount),
+      createdById: actorUserId,
+      assigneeId,
+    },
+  });
+}
 
 leadsRouter.get(
   "/",
@@ -160,7 +231,7 @@ leadsRouter.get(
     });
 
     if (!lead) {
-      throw new HttpError(404, "Lead nao encontrado");
+      throw new HttpError(404, "Lead não encontrado");
     }
 
     response.json({ item: serializeLead(lead) });
@@ -172,48 +243,68 @@ leadsRouter.post(
   requireModuleAccess("COMMERCIAL", "edit"),
   validate({ body: createLeadSchema }),
   async (request, response) => {
-    const lead = await prisma.lead.create({
-      data: {
-        company: request.body.company,
-        cnpj: request.body.cnpj,
-        contact: request.body.contact,
-        email: request.body.email,
-        phone: request.body.phone,
-        status: request.body.status,
-        valueInCents: toCents(request.body.value),
-        paymentMethod: request.body.paymentMethod,
-        isLite: request.body.isLite ?? false,
-        notes: request.body.notes,
-        sellerId: request.body.sellerId,
-        sdrId: request.body.sdrId,
-        originId: request.body.originId,
-        indicatorId: request.body.indicatorId,
-        wonAt: request.body.wonAt ? new Date(request.body.wonAt) : null,
-        lostAt: request.body.lostAt ? new Date(request.body.lostAt) : null,
-        createdById: request.auth.userId,
-        tasks: request.body.tasks?.length
-          ? {
-              create: request.body.tasks.map((task) => ({
-                title: task.title,
-                type: task.type,
-                done: task.done ?? false,
-                dueDate: task.dueDate ? new Date(task.dueDate) : null,
-                notes: task.notes,
-              })),
-            }
-          : undefined,
-        catalogItems: request.body.catalogItems?.length
-          ? {
-              create: request.body.catalogItems.map((item) => ({
-                catalogItemId: item.catalogItemId,
-                enabled: item.enabled ?? true,
-                setupInCents: toCents(item.setupAmount),
-                recurringInCents: toCents(item.recurringAmount),
-              })),
-            }
-          : undefined,
-      },
-      include: leadInclude,
+    const lead = await prisma.$transaction(async (tx) => {
+      const createdLead = await tx.lead.create({
+        data: {
+          company: request.body.company,
+          cnpj: request.body.cnpj,
+          contact: request.body.contact,
+          email: request.body.email,
+          phone: request.body.phone,
+          status: request.body.status,
+          valueInCents: toCents(request.body.value),
+          paymentMethod: request.body.paymentMethod,
+          isLite: request.body.isLite ?? false,
+          notes: buildLeadMetadataNotes(request.body),
+          sellerId: request.body.sellerId,
+          sdrId: request.body.sdrId,
+          originId: request.body.originId,
+          indicatorId: request.body.indicatorId,
+          wonAt:
+            request.body.wonAt || request.body.status === "Ganho"
+              ? new Date(request.body.wonAt || new Date().toISOString())
+              : null,
+          lostAt:
+            request.body.lostAt || request.body.status === "Perdido"
+              ? new Date(request.body.lostAt || new Date().toISOString())
+              : null,
+          createdById: request.auth.userId,
+          tasks: request.body.tasks?.length
+            ? {
+                create: request.body.tasks.map((task) => ({
+                  title: task.title,
+                  type: task.type,
+                  done: task.done ?? false,
+                  dueDate: task.dueDate ? new Date(task.dueDate) : null,
+                  notes: task.notes,
+                })),
+              }
+            : undefined,
+          catalogItems: request.body.catalogItems?.length
+            ? {
+                create: request.body.catalogItems.map((item) => ({
+                  catalogItemId: item.catalogItemId,
+                  enabled: item.enabled ?? true,
+                  setupInCents: toCents(item.setupAmount),
+                  recurringInCents: toCents(item.recurringAmount),
+                })),
+              }
+            : undefined,
+        },
+        include: {
+          ...leadInclude,
+          ticket: true,
+        },
+      });
+
+      if (createdLead.status === "Ganho") {
+        await createOrSyncLeadTicket(tx, createdLead, request.auth.userId, request.body.catalogItems);
+      }
+
+      return tx.lead.findUnique({
+        where: { id: createdLead.id },
+        include: leadInclude,
+      });
     });
 
     await writeAuditLog({
@@ -239,57 +330,133 @@ leadsRouter.patch(
   async (request, response) => {
     const existingLead = await prisma.lead.findUnique({
       where: { id: request.params.id },
+      include: {
+        ticket: true,
+      },
     });
 
     if (!existingLead) {
-      throw new HttpError(404, "Lead nao encontrado");
+      throw new HttpError(404, "Lead não encontrado");
     }
 
-    const lead = await prisma.lead.update({
-      where: { id: request.params.id },
-      data: {
-        ...("company" in request.body ? { company: request.body.company } : {}),
-        ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
-        ...("contact" in request.body ? { contact: request.body.contact } : {}),
-        ...("email" in request.body ? { email: request.body.email } : {}),
-        ...("phone" in request.body ? { phone: request.body.phone } : {}),
-        ...("status" in request.body ? { status: request.body.status } : {}),
-        ...("value" in request.body ? { valueInCents: toCents(request.body.value) } : {}),
-        ...("paymentMethod" in request.body
-          ? { paymentMethod: request.body.paymentMethod }
-          : {}),
-        ...("isLite" in request.body ? { isLite: request.body.isLite } : {}),
-        ...("notes" in request.body ? { notes: request.body.notes } : {}),
-        ...("sellerId" in request.body ? { sellerId: request.body.sellerId } : {}),
-        ...("sdrId" in request.body ? { sdrId: request.body.sdrId } : {}),
-        ...("originId" in request.body ? { originId: request.body.originId } : {}),
-        ...("indicatorId" in request.body ? { indicatorId: request.body.indicatorId } : {}),
-        ...("wonAt" in request.body
-          ? { wonAt: request.body.wonAt ? new Date(request.body.wonAt) : null }
-          : {}),
-        ...("lostAt" in request.body
-          ? { lostAt: request.body.lostAt ? new Date(request.body.lostAt) : null }
-          : {}),
-      },
-      include: leadInclude,
+    const currentMetadata = parseLeadMetadata(existingLead.notes);
+    const nextMetadata = {
+      ...currentMetadata,
+      ...Object.fromEntries(
+        Object.entries({
+          installment: request.body.installment,
+          consultant: request.body.consultant,
+          validUntil: request.body.validUntil,
+          agents: request.body.agents,
+          supervisors: request.body.supervisors,
+          admins: request.body.admins,
+          observations: request.body.observations,
+          representativeId: request.body.representativeId,
+          representativeCommission: request.body.representativeCommission,
+          passThroughAmount: request.body.passThroughAmount,
+          lossReason: request.body.lossReason,
+        }).filter(([, value]) => value !== undefined),
+      ),
+    };
+    const nextStatus = request.body.status || existingLead.status;
+    const lead = await prisma.$transaction(async (tx) => {
+      const updatedLead = await tx.lead.update({
+        where: { id: request.params.id },
+        data: {
+          ...("company" in request.body ? { company: request.body.company } : {}),
+          ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
+          ...("contact" in request.body ? { contact: request.body.contact } : {}),
+          ...("email" in request.body ? { email: request.body.email } : {}),
+          ...("phone" in request.body ? { phone: request.body.phone } : {}),
+          ...("status" in request.body ? { status: request.body.status } : {}),
+          ...("value" in request.body ? { valueInCents: toCents(request.body.value) } : {}),
+          ...("paymentMethod" in request.body
+            ? { paymentMethod: request.body.paymentMethod }
+            : {}),
+          ...("isLite" in request.body ? { isLite: request.body.isLite } : {}),
+          ...("sellerId" in request.body ? { sellerId: request.body.sellerId } : {}),
+          ...("sdrId" in request.body ? { sdrId: request.body.sdrId } : {}),
+          ...("originId" in request.body ? { originId: request.body.originId } : {}),
+          ...("indicatorId" in request.body ? { indicatorId: request.body.indicatorId } : {}),
+          notes: buildLeadMetadataNotes(nextMetadata),
+          ...("wonAt" in request.body
+            ? { wonAt: request.body.wonAt ? new Date(request.body.wonAt) : null }
+            : nextStatus === "Ganho" && !existingLead.wonAt
+              ? { wonAt: new Date() }
+              : nextStatus !== "Ganho" && existingLead.wonAt
+                ? { wonAt: null }
+                : {}),
+          ...("lostAt" in request.body
+            ? { lostAt: request.body.lostAt ? new Date(request.body.lostAt) : null }
+            : nextStatus === "Perdido" && !existingLead.lostAt
+              ? { lostAt: new Date() }
+              : nextStatus !== "Perdido" && existingLead.lostAt
+                ? { lostAt: null }
+                : {}),
+        },
+      });
+
+      if (Array.isArray(request.body.tasks)) {
+        await tx.leadTask.deleteMany({
+          where: { leadId: updatedLead.id },
+        });
+
+        if (request.body.tasks.length) {
+          await tx.leadTask.createMany({
+            data: request.body.tasks.map((task) => ({
+              leadId: updatedLead.id,
+              title: task.title,
+              type: task.type,
+              done: task.done ?? false,
+              dueDate: task.dueDate ? new Date(task.dueDate) : null,
+              notes: task.notes,
+            })),
+          });
+        }
+      }
+
+      if (Array.isArray(request.body.catalogItems)) {
+        await tx.leadCatalogItem.deleteMany({
+          where: { leadId: updatedLead.id },
+        });
+
+        if (request.body.catalogItems.length) {
+          await tx.leadCatalogItem.createMany({
+            data: request.body.catalogItems.map((item) => ({
+              leadId: updatedLead.id,
+              catalogItemId: item.catalogItemId,
+              enabled: item.enabled ?? true,
+              setupInCents: toCents(item.setupAmount),
+              recurringInCents: toCents(item.recurringAmount),
+            })),
+          });
+        }
+      }
+
+      if (nextStatus === "Ganho") {
+        await createOrSyncLeadTicket(
+          tx,
+          { ...updatedLead, ticket: existingLead.ticket, notes: buildLeadMetadataNotes(nextMetadata) },
+          request.auth.userId,
+          Array.isArray(request.body.catalogItems)
+            ? request.body.catalogItems
+            : (
+                await tx.leadCatalogItem.findMany({
+                  where: { leadId: updatedLead.id },
+                })
+              ).map((item) => ({
+                enabled: item.enabled,
+                setupAmount: item.setupInCents / 100,
+                recurringAmount: item.recurringInCents / 100,
+              })),
+        );
+      }
+
+      return tx.lead.findUnique({
+        where: { id: updatedLead.id },
+        include: leadInclude,
+      });
     });
-
-    if (Array.isArray(request.body.catalogItems)) {
-      await prisma.$transaction([
-        prisma.leadCatalogItem.deleteMany({
-          where: { leadId: lead.id },
-        }),
-        prisma.leadCatalogItem.createMany({
-          data: request.body.catalogItems.map((item) => ({
-            leadId: lead.id,
-            catalogItemId: item.catalogItemId,
-            enabled: item.enabled ?? true,
-            setupInCents: toCents(item.setupAmount),
-            recurringInCents: toCents(item.recurringAmount),
-          })),
-        }),
-      ]);
-    }
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
@@ -301,12 +468,7 @@ leadsRouter.patch(
       metadata: request.body,
     });
 
-    const refreshedLead = await prisma.lead.findUnique({
-      where: { id: lead.id },
-      include: leadInclude,
-    });
-
-    response.json({ item: serializeLead(refreshedLead) });
+    response.json({ item: serializeLead(lead) });
   },
 );
 
@@ -327,7 +489,7 @@ leadsRouter.delete(
     });
 
     if (!lead) {
-      throw new HttpError(404, "Lead nao encontrado");
+      throw new HttpError(404, "Lead não encontrado");
     }
 
     await prisma.$transaction(async (tx) => {
@@ -411,7 +573,7 @@ leadsRouter.post(
     });
 
     if (!lead) {
-      throw new HttpError(404, "Lead nao encontrado");
+      throw new HttpError(404, "Lead não encontrado");
     }
 
     const task = await prisma.leadTask.create({
@@ -452,7 +614,7 @@ leadsRouter.post(
     });
 
     if (!lead) {
-      throw new HttpError(404, "Lead nao encontrado");
+      throw new HttpError(404, "Lead não encontrado");
     }
 
     const comment = await prisma.leadComment.create({
@@ -476,6 +638,17 @@ leadsRouter.post(
       metadata: { leadId: lead.id },
     });
 
-    response.status(201).json({ item: comment });
+    response.status(201).json({
+      item: {
+        ...comment,
+        author: comment.author
+          ? {
+              id: comment.author.id,
+              name: comment.author.name,
+              email: comment.author.email,
+            }
+          : null,
+      },
+    });
   },
 );

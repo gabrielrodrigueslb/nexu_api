@@ -35,7 +35,6 @@ async function ensureEntityDoesNotExist(tx, entityType, entityId) {
     CatalogItem: tx.catalogItem,
     Tag: tx.tag,
     Origin: tx.origin,
-    Sdr: tx.sdr,
     Indicator: tx.indicator,
     Lead: tx.lead,
     Ticket: tx.ticket,
@@ -44,7 +43,7 @@ async function ensureEntityDoesNotExist(tx, entityType, entityId) {
   const model = modelMap[entityType];
 
   if (!model) {
-    throw new HttpError(422, "Tipo de item nao suportado para restauracao");
+    throw new HttpError(422, "Tipo de item não suportado para restauração");
   }
 
   const existing = await model.findUnique({
@@ -71,9 +70,6 @@ async function restoreTrashItem(tx, trashItem) {
     case "Origin":
       await tx.origin.create({ data: payload });
       break;
-    case "Sdr":
-      await tx.sdr.create({ data: payload });
-      break;
     case "Indicator":
       await tx.indicator.create({ data: payload });
       break;
@@ -99,7 +95,7 @@ async function restoreTrashItem(tx, trashItem) {
       });
       break;
     default:
-      throw new HttpError(422, "Tipo de item nao suportado para restauracao");
+      throw new HttpError(422, "Tipo de item não suportado para restauração");
   }
 }
 

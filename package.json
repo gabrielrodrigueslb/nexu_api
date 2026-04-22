@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/server.js",
+    "dev": "nodemon --watch src --ext js,json --signal SIGTERM src/server.js",
     "start": "node src/server.js",
     "prisma:generate": "prisma generate",
     "db:push": "prisma db push",
@@ -29,6 +29,7 @@
     "zod": "^3.24.4"
   },
   "devDependencies": {
+    "nodemon": "^3.1.14",
     "prisma": "^6.19.3"
   }
 }

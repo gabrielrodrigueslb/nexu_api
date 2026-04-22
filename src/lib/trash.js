@@ -39,7 +39,7 @@ export async function getTrashItemOrThrow(id) {
   });
 
   if (!item) {
-    throw new HttpError(404, "Item nao encontrado na lixeira");
+    throw new HttpError(404, "Item não encontrado na lixeira");
   }
 
   return item;

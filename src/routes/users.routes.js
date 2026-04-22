@@ -31,6 +31,12 @@ const listUsersQuerySchema = paginationSchema.extend({
   sector: userSectorSchema.optional(),
   active: z.coerce.boolean().optional(),
 });
+const userDirectoryQuerySchema = z.object({
+  q: z.string().trim().optional(),
+  role: userRoleSchema.optional(),
+  sector: userSectorSchema.optional(),
+  active: z.coerce.boolean().optional(),
+});
 
 const createUserSchema = z.object({
   name: z.string().trim().min(3).max(120),
@@ -68,11 +74,11 @@ async function validateAccessPreset(accessPresetId, role) {
   });
 
   if (!preset) {
-    throw new HttpError(404, "Preset de acesso nao encontrado");
+    throw new HttpError(404, "Preset de acesso não encontrado");
   }
 
   if (normalizeRole(preset.role) !== normalizeRole(role)) {
-    throw new HttpError(422, "O preset precisa ser do mesmo cargo base do usuario");
+    throw new HttpError(422, "O preset precisa ser do mesmo cargo base do usuário");
   }
 
   return preset;
@@ -104,7 +110,7 @@ async function ensureUserModulesExist(modulePermissions = []) {
   const missingKeys = moduleKeys.filter((key) => !existingKeys.has(key));
 
   if (missingKeys.length) {
-    throw new HttpError(422, `Modulos inexistentes: ${missingKeys.join(", ")}`);
+    throw new HttpError(422, `Módulos inexistentes: ${missingKeys.join(", ")}`);
   }
 }
 
@@ -146,6 +152,45 @@ usersRouter.get(
 );
 
 usersRouter.get(
+  "/directory",
+  validate({ query: userDirectoryQuerySchema }),
+  async (request, response) => {
+    const where = {
+      ...(request.query.q
+        ? {
+            OR: [
+              { name: { contains: request.query.q } },
+              { email: { contains: request.query.q } },
+            ],
+          }
+        : {}),
+      ...(request.query.role ? { role: request.query.role } : {}),
+      ...(request.query.sector ? { sector: request.query.sector } : {}),
+      ...(request.query.active !== undefined ? { isActive: request.query.active } : { isActive: true }),
+    };
+
+    const items = await prisma.user.findMany({
+      where,
+      orderBy: [{ name: "asc" }],
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        sector: true,
+        isActive: true,
+      },
+    });
+
+    response.json({
+      items: items.map((item) => ({
+        ...item,
+      })),
+    });
+  },
+);
+
+usersRouter.get(
   "/:id",
   authorize(["admin"]),
   validate({ params: z.object({ id: cuidSchema }) }),
@@ -155,7 +200,7 @@ usersRouter.get(
     });
 
     if (!user) {
-      throw new HttpError(404, "Usuario nao encontrado");
+      throw new HttpError(404, "Usuário não encontrado");
     }
 
     response.json({ item: serializeUser(user) });
@@ -172,7 +217,7 @@ usersRouter.post("/", authorize(["admin"]), validate({ body: createUserSchema })
   });
 
   if (existingUser) {
-    throw new HttpError(409, "Ja existe usuario com este e-mail");
+    throw new HttpError(409, "Já existe usuário com este e-mail");
   }
 
   const user = await prisma.user.create({
@@ -180,7 +225,7 @@ usersRouter.post("/", authorize(["admin"]), validate({ body: createUserSchema })
       name: request.body.name,
       email,
       passwordHash: await hashPassword(request.body.password),
-      role: normalizeRole(request.body.role),
+      role: request.body.role,
       sector: request.body.sector,
       accessPresetId: request.body.accessPresetId,
       isActive: request.body.isActive ?? true,
@@ -217,7 +262,7 @@ usersRouter.patch(
     });
 
     if (!existingUser) {
-      throw new HttpError(404, "Usuario nao encontrado");
+      throw new HttpError(404, "Usuário não encontrado");
     }
 
     const nextRole = request.body.role || existingUser.role;
@@ -237,7 +282,7 @@ usersRouter.patch(
         where: { id: request.params.id },
         data: {
           ...("name" in request.body ? { name: request.body.name } : {}),
-          ...("role" in request.body ? { role: normalizeRole(request.body.role) } : {}),
+          ...("role" in request.body ? { role: request.body.role } : {}),
           ...("sector" in request.body ? { sector: request.body.sector } : {}),
           ...("isActive" in request.body ? { isActive: request.body.isActive } : {}),
           ...("accessPresetId" in request.body
@@ -292,7 +337,7 @@ usersRouter.post(
     });
 
     if (!user) {
-      throw new HttpError(404, "Usuario nao encontrado");
+      throw new HttpError(404, "Usuário não encontrado");
     }
 
     await prisma.$transaction(async (tx) => {

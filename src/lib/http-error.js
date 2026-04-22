@@ -7,7 +7,7 @@ export class HttpError extends Error {
   }
 }
 
-export function assertFound(record, message = "Registro nao encontrado") {
+export function assertFound(record, message = "Registro não encontrado") {
   if (!record) {
     throw new HttpError(404, message);
   }

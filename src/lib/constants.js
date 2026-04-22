@@ -1,4 +1,4 @@
-export const USER_ROLES = ["basic", "leader", "admin"];
+export const USER_ROLES = ["basic", "leader", "admin", "sdr"];
 export const USER_SECTORS = [
   "CS",
   "Comercial",
@@ -46,6 +46,7 @@ export const LEGACY_ROLE_ALIASES = {
   basic: "basic",
   leader: "leader",
   admin: "admin",
+  sdr: "basic",
 };
 
 export const MODULE_KEYS = [
@@ -64,7 +65,7 @@ export const DEFAULT_MODULES = [
   {
     key: "DASHBOARD",
     name: "Dashboard",
-    description: "Visao geral e indicadores",
+    description: "Visão geral e indicadores",
     sortOrder: 10,
   },
   {
@@ -82,7 +83,7 @@ export const DEFAULT_MODULES = [
   {
     key: "IMPLANTACAO",
     name: "Implantacao",
-    description: "Tickets e acompanhamento de implantacao",
+    description: "Tickets e acompanhamento de implantação",
     sortOrder: 40,
   },
   {
@@ -106,7 +107,7 @@ export const DEFAULT_MODULES = [
   {
     key: "USUARIOS",
     name: "Usuarios",
-    description: "Gestao de usuarios, cargos e acessos",
+    description: "Gestão de usuários, cargos e acessos",
     sortOrder: 80,
   },
   {
@@ -121,7 +122,7 @@ export const SYSTEM_PRESET_DEFINITIONS = [
   {
     slug: "basic-commercial-view",
     name: "Basico Comercial",
-    description: "Visualizacao do modulo comercial",
+    description: "Visualização do módulo comercial",
     role: "basic",
     modulePermissions: [
       { moduleKey: "DASHBOARD", accessLevel: "view" },
@@ -141,7 +142,7 @@ export const SYSTEM_PRESET_DEFINITIONS = [
   {
     slug: "leader-commercial",
     name: "Lider Comercial",
-    description: "Gerencia o modulo comercial e restaura itens da lixeira",
+    description: "Gerencia o módulo comercial e restaura itens da lixeira",
     role: "leader",
     modulePermissions: [
       { moduleKey: "DASHBOARD", accessLevel: "view" },
@@ -152,7 +153,7 @@ export const SYSTEM_PRESET_DEFINITIONS = [
   {
     slug: "leader-finance",
     name: "Lider Financeiro",
-    description: "Gerencia o modulo financeiro e restaura itens da lixeira",
+    description: "Gerencia o módulo financeiro e restaura itens da lixeira",
     role: "leader",
     modulePermissions: [
       { moduleKey: "DASHBOARD", accessLevel: "view" },
@@ -163,7 +164,7 @@ export const SYSTEM_PRESET_DEFINITIONS = [
   {
     slug: "leader-implantacao",
     name: "Lider Implantacao",
-    description: "Gerencia implantacao e restaura itens da lixeira",
+    description: "Gerencia implantação e restaura itens da lixeira",
     role: "leader",
     modulePermissions: [
       { moduleKey: "DASHBOARD", accessLevel: "view" },

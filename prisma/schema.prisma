@@ -28,6 +28,7 @@ model User {
   auditLogs           AuditLog[]     @relation("ActorAuditLogs")
   createdLeads        Lead[]         @relation("LeadCreator")
   soldLeads           Lead[]         @relation("LeadSeller")
+  sdrLeads            Lead[]         @relation("LeadSdr")
   createdTickets      Ticket[]       @relation("TicketCreator")
   assignedTickets     Ticket[]       @relation("TicketAssignee")
   technicalTickets    Ticket[]       @relation("TicketTechnicalAssignee")
@@ -189,17 +190,6 @@ model Origin {
   @@index([active, createdAt])
 }
 
-model Sdr {
-  id        String   @id @default(cuid())
-  name      String   @unique
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  leads     Lead[]
-
-  @@index([active, createdAt])
-}
-
 model Indicator {
   id           String   @id @default(cuid())
   name         String
@@ -243,7 +233,7 @@ model Lead {
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
   seller        User?             @relation("LeadSeller", fields: [sellerId], references: [id], onDelete: SetNull)
-  sdr           Sdr?              @relation(fields: [sdrId], references: [id], onDelete: SetNull)
+  sdr           User?             @relation("LeadSdr", fields: [sdrId], references: [id], onDelete: SetNull)
   origin        Origin?           @relation(fields: [originId], references: [id], onDelete: SetNull)
   indicator     Indicator?        @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
   createdBy     User              @relation("LeadCreator", fields: [createdById], references: [id], onDelete: Restrict)

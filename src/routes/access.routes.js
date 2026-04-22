@@ -134,7 +134,7 @@ accessRouter.patch(
     });
 
     if (!current) {
-      throw new HttpError(404, "Modulo nao encontrado");
+      throw new HttpError(404, "Módulo não encontrado");
     }
 
     const nextKey =
@@ -143,7 +143,7 @@ accessRouter.patch(
         : current.key;
 
     if (current.isSystem && request.body.key && nextKey !== current.key) {
-      throw new HttpError(422, "Nao e permitido alterar a chave de um modulo padrao");
+      throw new HttpError(422, "Não é permitido alterar a chave de um módulo padrão");
     }
 
     const module = await prisma.accessModule.update({
@@ -233,7 +233,7 @@ accessRouter.patch(
     });
 
     if (!current) {
-      throw new HttpError(404, "Preset nao encontrado");
+      throw new HttpError(404, "Preset não encontrado");
     }
 
     const permissions = request.body.modulePermissions
@@ -314,7 +314,7 @@ accessRouter.get(
     });
 
     if (!user) {
-      throw new HttpError(404, "Usuario nao encontrado");
+      throw new HttpError(404, "Usuário não encontrado");
     }
 
     response.json({
@@ -342,7 +342,7 @@ accessRouter.put(
     });
 
     if (!user) {
-      throw new HttpError(404, "Usuario nao encontrado");
+      throw new HttpError(404, "Usuário não encontrado");
     }
 
     if (request.body.accessPresetId) {
@@ -351,11 +351,11 @@ accessRouter.put(
       });
 
       if (!preset) {
-        throw new HttpError(404, "Preset de acesso nao encontrado");
+        throw new HttpError(404, "Preset de acesso não encontrado");
       }
 
       if (normalizeRole(preset.role) !== normalizeRole(user.role)) {
-        throw new HttpError(422, "O preset precisa ser do mesmo cargo base do usuario");
+        throw new HttpError(422, "O preset precisa ser do mesmo cargo base do usuário");
       }
     }
 
