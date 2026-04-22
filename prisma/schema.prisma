@@ -35,6 +35,7 @@ model User {
   leadComments        LeadComment[]
   ticketComments      TicketComment[]
   ticketTasks         TicketTask[]
+  indicatorPayments   IndicatorPayment[] @relation("IndicatorPaymentPaidBy")
 
   @@index([role, isActive])
   @@index([sector, isActive])
@@ -206,6 +207,7 @@ model Indicator {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   leads        Lead[]
+  payments     IndicatorPayment[]
 
   @@index([active, createdAt])
   @@index([name])
@@ -241,6 +243,7 @@ model Lead {
   comments      LeadComment[]
   catalogItems  LeadCatalogItem[]
   ticket        Ticket?
+  indicatorPayment IndicatorPayment?
 
   @@index([status, createdAt])
   @@index([sellerId, status])
@@ -249,6 +252,29 @@ model Lead {
   @@index([createdById, createdAt])
   @@index([company])
   @@index([cnpj])
+}
+
+model IndicatorPayment {
+  id                    String    @id @default(cuid())
+  leadId                String    @unique
+  indicatorId           String?
+  indicatorNameSnapshot String
+  leadCompanySnapshot   String
+  amountInCents         Int       @default(0)
+  status                String    @default("pending")
+  dueDate               DateTime?
+  paidAt                DateTime?
+  notes                 String?
+  paidByUserId          String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  lead                  Lead      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  indicator             Indicator? @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
+  paidBy                User?     @relation("IndicatorPaymentPaidBy", fields: [paidByUserId], references: [id], onDelete: SetNull)
+
+  @@index([status, dueDate])
+  @@index([indicatorId, status])
+  @@index([paidByUserId, paidAt])
 }
 
 model LeadTask {

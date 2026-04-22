@@ -141,3 +141,35 @@ export function serializeTicket(ticket) {
     })),
   };
 }
+
+export function serializeIndicatorPayment(payment) {
+  if (!payment) return null;
+
+  return {
+    ...payment,
+    amount: fromCents(payment.amountInCents),
+    lead: payment.lead
+      ? {
+          id: payment.lead.id,
+          company: payment.lead.company,
+          wonAt: payment.lead.wonAt,
+          seller: serializeUser(payment.lead.seller),
+          ticket: payment.lead.ticket
+            ? {
+                id: payment.lead.ticket.id,
+                code: payment.lead.ticket.code,
+                setupAmount: fromCents(payment.lead.ticket.setupInCents),
+              }
+            : null,
+        }
+      : null,
+    indicator: payment.indicator
+      ? {
+          id: payment.indicator.id,
+          name: payment.indicator.name,
+          percentSetup: payment.indicator.percentSetup,
+        }
+      : null,
+    paidBy: serializeUser(payment.paidBy),
+  };
+}
