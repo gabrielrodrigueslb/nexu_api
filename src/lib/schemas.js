@@ -10,6 +10,16 @@ export const passwordSchema = z
   .regex(/\d/, "A senha deve conter numero")
   .regex(/[^\w\s]/, "A senha deve conter caractere especial");
 
+export const instanceDomainSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(120)
+  .regex(
+    /^(?!-)[a-z0-9-]+(?<!-)\.atenderbem\.com$/i,
+    "A instancia deve estar no formato nome.atenderbem.com",
+  );
+
 export const paginationSchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
   limit: z.coerce.number().int().min(1).max(100).optional(),

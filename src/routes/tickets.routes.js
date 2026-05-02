@@ -8,8 +8,8 @@ import { buildLeadMetadataNotes, parseLeadMetadata } from "../lib/lead-metadata.
 import { toCents } from "../lib/money.js";
 import { buildPageMeta, getPagination } from "../lib/pagination.js";
 import { prisma } from "../lib/prisma.js";
-import { cuidSchema, paginationSchema } from "../lib/schemas.js";
-import { serializeTicket } from "../lib/serializers.js";
+import { cuidSchema, instanceDomainSchema, paginationSchema } from "../lib/schemas.js";
+import { serializeLead, serializeTicket } from "../lib/serializers.js";
 import { moveEntityToTrash } from "../lib/trash.js";
 import { authenticate } from "../middlewares/authenticate.js";
 import { requireModuleAccess } from "../middlewares/require-module-access.js";
@@ -54,7 +54,7 @@ const createTicketSchema = z.object({
   contact: z.string().trim().max(120).optional().nullable(),
   email: z.string().email().optional().nullable(),
   phone: z.string().trim().max(40).optional().nullable(),
-  instance: z.string().trim().max(80).optional().nullable(),
+  instance: instanceDomainSchema.optional().nullable(),
   plan: z.string().trim().max(80).optional().nullable(),
   paymentMethod: z.string().trim().max(40).optional().nullable(),
   installment: z.string().trim().max(40).optional().nullable(),
@@ -145,6 +145,101 @@ const ticketInclude = {
   },
 };
 
+function buildClientHistoryWhere(ticket) {
+  const cnpj = ticket.cnpj || null;
+  const company = ticket.company || null;
+
+  if (cnpj) {
+    return {
+      OR: [
+        { cnpj },
+        { lead: { cnpj } },
+      ],
+    };
+  }
+
+  if (company) {
+    return {
+      OR: [
+        { company },
+        { lead: { company } },
+      ],
+    };
+  }
+
+  return { id: ticket.id };
+}
+
+function buildDevHistoryWhere(ticket) {
+  const cnpj = ticket.cnpj || null;
+  const company = ticket.company || null;
+
+  if (cnpj) {
+    return {
+      OR: [
+        { cnpj },
+        { clientName: company || undefined },
+      ].filter(Boolean),
+    };
+  }
+
+  if (company) {
+    return {
+      clientName: company,
+    };
+  }
+
+  return null;
+}
+
+function serializeClientDevTicket(ticket) {
+  return {
+    id: ticket.id,
+    proto: ticket.proto,
+    title: ticket.title,
+    category: ticket.category,
+    devType: ticket.devType,
+    devStatus: ticket.devStatus,
+    complexity: ticket.complexity,
+    score: ticket.score,
+    totalPts: ticket.totalPts,
+    clientName: ticket.clientName,
+    instance: ticket.instance,
+    cnpj: ticket.cnpj,
+    createdAt: ticket.createdAt,
+    deadline: ticket.deadline,
+    resolvedAt: ticket.resolvedAt,
+    assignee: ticket.assignee
+      ? {
+          id: ticket.assignee.id,
+          name: ticket.assignee.name,
+        }
+      : null,
+    sprint: ticket.sprint
+      ? {
+          id: ticket.sprint.id,
+          name: ticket.sprint.name,
+        }
+      : null,
+  };
+}
+
+function collectClientInstances(ticket, relatedTickets = [], lead = null) {
+  const values = [
+    ticket.instance,
+    ...relatedTickets.map((item) => item.instance),
+  ]
+    .map((value) => value?.trim())
+    .filter(Boolean);
+
+  const uniqueValues = [...new Set(values)];
+
+  return {
+    primaryInstance: uniqueValues[0] || null,
+    instances: uniqueValues,
+  };
+}
+
 ticketsRouter.use(authenticate);
 
 ticketsRouter.get(
@@ -210,6 +305,111 @@ ticketsRouter.get(
     }
 
     response.json({ item: serializeTicket(ticket) });
+  },
+);
+
+ticketsRouter.get(
+  "/closed-clients/:id/details",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ params: z.object({ id: cuidSchema }) }),
+  async (request, response) => {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: request.params.id },
+      include: ticketInclude,
+    });
+
+    if (!ticket) {
+      throw new HttpError(404, "Ticket nÃ£o encontrado");
+    }
+
+    const historyWhere = buildClientHistoryWhere(ticket);
+    const devHistoryWhere = buildDevHistoryWhere(ticket);
+
+    const [relatedTickets, devTickets, leadWithExtras] = await Promise.all([
+      prisma.ticket.findMany({
+        where: historyWhere,
+        include: ticketInclude,
+        orderBy: { createdAt: "desc" },
+      }),
+      devHistoryWhere
+        ? prisma.devTicket.findMany({
+            where: devHistoryWhere,
+            include: {
+              assignee: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+              sprint: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+            orderBy: { createdAt: "desc" },
+          })
+        : Promise.resolve([]),
+      ticket.leadId
+        ? prisma.lead.findUnique({
+            where: { id: ticket.leadId },
+            include: {
+              seller: true,
+              sdr: true,
+              origin: true,
+              indicator: true,
+              indicatorPayment: {
+                include: {
+                  paidBy: true,
+                },
+              },
+              catalogItems: {
+                include: {
+                  catalogItem: true,
+                },
+                orderBy: {
+                  createdAt: "asc",
+                },
+              },
+              comments: {
+                include: {
+                  author: true,
+                },
+                orderBy: {
+                  createdAt: "desc",
+                },
+              },
+              tasks: {
+                orderBy: {
+                  createdAt: "asc",
+                },
+              },
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const instanceData = collectClientInstances(ticket, relatedTickets, leadWithExtras);
+
+    response.json({
+      item: {
+        anchorTicket: serializeTicket(ticket),
+        lead: leadWithExtras ? serializeLead(leadWithExtras) : null,
+        relatedTickets: relatedTickets.map(serializeTicket),
+        developmentTickets: devTickets.map(serializeClientDevTicket),
+        instance: instanceData,
+        summary: {
+          totalTickets: relatedTickets.length,
+          totalDevTickets: devTickets.length,
+          totalSetupAmount: relatedTickets.reduce((sum, item) => sum + (item.setupInCents || 0), 0),
+          totalRecurringAmount: relatedTickets.reduce(
+            (sum, item) => sum + (item.recurringInCents || 0),
+            0,
+          ),
+        },
+      },
+    });
   },
 );
 

@@ -5,7 +5,7 @@ import { writeAuditLog } from "../lib/audit.js";
 import { HttpError } from "../lib/http-error.js";
 import { buildPageMeta, getPagination } from "../lib/pagination.js";
 import { prisma } from "../lib/prisma.js";
-import { cuidSchema, paginationSchema } from "../lib/schemas.js";
+import { cuidSchema, instanceDomainSchema, paginationSchema } from "../lib/schemas.js";
 import { authenticate } from "../middlewares/authenticate.js";
 import { requireModuleAccess } from "../middlewares/require-module-access.js";
 import { validate } from "../middlewares/validate.js";
@@ -53,7 +53,7 @@ const devTicketSchema = z.object({
   parentId: z.coerce.number().int().positive().optional().nullable(),
   clientName: z.string().trim().max(160).optional().nullable(),
   protoExt: z.string().trim().max(120).optional().nullable(),
-  instance: z.string().trim().max(120).optional().nullable(),
+  instance: instanceDomainSchema.optional().nullable(),
   cnpj: z.string().trim().max(24).optional().nullable(),
   clientPhone: z.string().trim().max(40).optional().nullable(),
   description: z.string().trim().min(3).max(5000),
