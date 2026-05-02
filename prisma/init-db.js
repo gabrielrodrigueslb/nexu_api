@@ -77,7 +77,7 @@ if (force) {
     fs.rmSync(normalizedDatabasePath, { force: true });
     fs.rmSync(`${normalizedDatabasePath}-journal`, { force: true });
   } catch (error) {
-    if (error?.code !== "EBUSY") {
+    if (error?.code !== "EBUSY" && error?.code !== "EPERM") {
       throw error;
     }
 
@@ -90,11 +90,10 @@ const result = spawnSync(
   [
     prismaCliPath,
     "db",
-    "execute",
-    "--file",
-    path.join(__dirname, "init.sql"),
+    "push",
     "--schema",
     path.join(__dirname, "schema.prisma"),
+    "--accept-data-loss",
   ],
   {
     cwd: path.resolve(__dirname, ".."),

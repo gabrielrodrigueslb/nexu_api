@@ -316,6 +316,71 @@ CREATE TABLE "TicketComment" (
     CONSTRAINT "TicketComment_authorUserId_fkey" FOREIGN KEY ("authorUserId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
 );
 
+-- CreateTable
+CREATE TABLE "DevSprint" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "name" TEXT NOT NULL,
+    "goal" TEXT,
+    "startDate" DATETIME NOT NULL,
+    "endDate" DATETIME NOT NULL,
+    "closed" BOOLEAN NOT NULL DEFAULT false,
+    "closedAt" DATETIME,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+);
+
+-- CreateTable
+CREATE TABLE "DevTicket" (
+    "id" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "proto" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "category" TEXT NOT NULL,
+    "devType" TEXT NOT NULL,
+    "devStatus" TEXT NOT NULL,
+    "complexity" TEXT NOT NULL DEFAULT 'Media',
+    "score" INTEGER NOT NULL DEFAULT 0,
+    "totalPts" INTEGER NOT NULL DEFAULT 0,
+    "createdById" TEXT NOT NULL,
+    "assigneeId" TEXT,
+    "sprintId" TEXT,
+    "parentId" INTEGER,
+    "clientName" TEXT,
+    "protoExt" TEXT,
+    "instance" TEXT,
+    "cnpj" TEXT,
+    "clientPhone" TEXT,
+    "description" TEXT NOT NULL,
+    "tagsJson" TEXT NOT NULL DEFAULT '[]',
+    "criteriaJson" TEXT NOT NULL DEFAULT '{}',
+    "historyJson" TEXT NOT NULL DEFAULT '[]',
+    "incident" BOOLEAN NOT NULL DEFAULT false,
+    "compliment" BOOLEAN NOT NULL DEFAULT false,
+    "docDone" BOOLEAN NOT NULL DEFAULT false,
+    "prodBug" BOOLEAN NOT NULL DEFAULT false,
+    "reopened" BOOLEAN NOT NULL DEFAULT false,
+    "criticalBug" BOOLEAN NOT NULL DEFAULT false,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "startDate" DATETIME,
+    "deadline" DATETIME,
+    "resolvedAt" DATETIME,
+    "updatedAt" DATETIME NOT NULL,
+    CONSTRAINT "DevTicket_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT "DevTicket_assigneeId_fkey" FOREIGN KEY ("assigneeId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "DevTicket_sprintId_fkey" FOREIGN KEY ("sprintId") REFERENCES "DevSprint" ("id") ON DELETE SET NULL ON UPDATE CASCADE,
+    CONSTRAINT "DevTicket_parentId_fkey" FOREIGN KEY ("parentId") REFERENCES "DevTicket" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+);
+
+-- CreateTable
+CREATE TABLE "DevTicketComment" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "ticketId" INTEGER NOT NULL,
+    "authorUserId" TEXT NOT NULL,
+    "message" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "DevTicketComment_ticketId_fkey" FOREIGN KEY ("ticketId") REFERENCES "DevTicket" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "DevTicketComment_authorUserId_fkey" FOREIGN KEY ("authorUserId") REFERENCES "User" ("id") ON DELETE RESTRICT ON UPDATE CASCADE
+);
+
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
 
@@ -507,4 +572,34 @@ CREATE INDEX "TicketComment_ticketId_createdAt_idx" ON "TicketComment"("ticketId
 
 -- CreateIndex
 CREATE INDEX "TicketComment_authorUserId_createdAt_idx" ON "TicketComment"("authorUserId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "DevSprint_closed_startDate_idx" ON "DevSprint"("closed", "startDate");
+
+-- CreateIndex
+CREATE INDEX "DevSprint_createdAt_idx" ON "DevSprint"("createdAt");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "DevTicket_proto_key" ON "DevTicket"("proto");
+
+-- CreateIndex
+CREATE INDEX "DevTicket_devStatus_createdAt_idx" ON "DevTicket"("devStatus", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "DevTicket_devType_devStatus_idx" ON "DevTicket"("devType", "devStatus");
+
+-- CreateIndex
+CREATE INDEX "DevTicket_assigneeId_devStatus_idx" ON "DevTicket"("assigneeId", "devStatus");
+
+-- CreateIndex
+CREATE INDEX "DevTicket_sprintId_devStatus_idx" ON "DevTicket"("sprintId", "devStatus");
+
+-- CreateIndex
+CREATE INDEX "DevTicket_resolvedAt_idx" ON "DevTicket"("resolvedAt");
+
+-- CreateIndex
+CREATE INDEX "DevTicketComment_ticketId_createdAt_idx" ON "DevTicketComment"("ticketId", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "DevTicketComment_authorUserId_createdAt_idx" ON "DevTicketComment"("authorUserId", "createdAt");
 

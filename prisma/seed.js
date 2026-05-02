@@ -1681,6 +1681,204 @@ async function seedDevelopmentData({ usersByEmail }) {
   }
 }
 
+async function seedCoverageData(context) {
+  await upsertLead(
+    {
+      company: "Helix Care",
+      cnpj: "70.456.123/0001-55",
+      contact: "Vanessa Prado",
+      email: "vanessa@helixcare.com.br",
+      phone: "11933332222",
+      status: "Apresentacao",
+      value: 6100,
+      paymentMethod: "Pix",
+      sellerEmail: "carla@nexu.com.br",
+      sdrEmail: "marina@nexu.com.br",
+      originName: "Inbound",
+      createdByEmail: "gabriel@nexu.com.br",
+      consultant: "Carla Mendes",
+      observations: "Lead criado para garantir cobertura do status de apresentacao no seed.",
+      tasks: [
+        {
+          title: "Ligacao de alinhamento",
+          type: "ligacao",
+          done: true,
+          dueDate: "2026-03-18T13:00:00.000Z",
+        },
+        {
+          title: "Enviar resumo por email",
+          type: "email",
+          done: false,
+          dueDate: "2026-03-19T12:00:00.000Z",
+        },
+        {
+          title: "Follow por WhatsApp",
+          type: "whatsapp",
+          done: false,
+          dueDate: "2026-03-19T16:00:00.000Z",
+        },
+        {
+          title: "Registrar observacao extra",
+          type: "outro",
+          done: false,
+          dueDate: "2026-03-20T10:00:00.000Z",
+          notes: "Tarefa de cobertura para os tipos de atividade restantes.",
+        },
+      ],
+      comments: [
+        {
+          authorEmail: "carla@nexu.com.br",
+          message: "Apresentacao comercial agendada e materiais preparados.",
+          createdAt: "2026-03-18T14:00:00.000Z",
+        },
+      ],
+      catalogItems: [
+        { name: "Consultoria", setupAmount: 1200, recurringAmount: 0 },
+      ],
+    },
+    context,
+  );
+
+  const coverageLead = await prisma.lead.findFirst({
+    where: { company: "Helix Care" },
+  });
+
+  if (coverageLead) {
+    await upsertTicket(
+      {
+        code: "COM-100006",
+        leadId: coverageLead.id,
+        company: "Helix Care",
+        cnpj: "70.456.123/0001-55",
+        contact: "Vanessa Prado",
+        email: "vanessa@helixcare.com.br",
+        phone: "11933332222",
+        instance: "helix-care",
+        plan: "Renovacao Anual",
+        paymentMethod: "Pix",
+        installment: "12x",
+        type: "renovacao",
+        status: "pagamento_confirmado",
+        csStatus: "Pagamento Confirmado",
+        notes: "Ticket criado para cobrir o tipo de renovacao no seed.",
+        setupAmount: 0,
+        recurringAmount: 6100,
+        createdByEmail: "gabriel@nexu.com.br",
+        assigneeEmail: "igor@nexu.com.br",
+        technicalAssigneeEmail: "ana.dev@nexu.com.br",
+        createdAt: "2026-03-19T09:00:00.000Z",
+        updatedAt: "2026-03-19T10:00:00.000Z",
+        tasks: [
+          {
+            title: "Validar renovacao com CS",
+            assigneeEmail: "celia@nexu.com.br",
+            done: false,
+            dueDate: "2026-03-21T15:00:00.000Z",
+          },
+        ],
+        comments: [
+          {
+            authorEmail: "gabriel@nexu.com.br",
+            message: "Renovacao inserida para validar fluxos dependentes desse tipo de ticket.",
+            createdAt: "2026-03-19T09:15:00.000Z",
+          },
+        ],
+      },
+      context,
+    );
+  }
+}
+
+async function seedOperationalRecords({ usersByEmail, leadsByCompany, ticketsByCode }) {
+  const adminUser = usersByEmail["gabriel@nexu.com.br"];
+  const financeUser = usersByEmail["fernanda.financeiro@nexu.com.br"];
+  const canceledTicket = ticketsByCode["COM-100005"];
+  const sampleLead = leadsByCompany["Atlas Energia"];
+
+  await prisma.refreshToken.upsert({
+    where: { tokenHash: "seed-refresh-token-gabriel" },
+    create: {
+      userId: adminUser.id,
+      family: "seed-family-gabriel",
+      tokenHash: "seed-refresh-token-gabriel",
+      expiresAt: new Date("2026-12-31T23:59:59.000Z"),
+      ipAddress: "127.0.0.1",
+      userAgent: "seed-script",
+      createdAt: new Date("2026-03-18T08:00:00.000Z"),
+    },
+    update: {
+      userId: adminUser.id,
+      family: "seed-family-gabriel",
+      expiresAt: new Date("2026-12-31T23:59:59.000Z"),
+      revokedAt: null,
+      replacedByTokenId: null,
+      ipAddress: "127.0.0.1",
+      userAgent: "seed-script",
+    },
+  });
+
+  await prisma.auditLog.deleteMany({
+    where: {
+      action: {
+        in: ["SEED_BOOTSTRAP", "SEED_TRASH_SAMPLE"],
+      },
+    },
+  });
+
+  await prisma.auditLog.createMany({
+    data: [
+      {
+        actorUserId: adminUser.id,
+        action: "SEED_BOOTSTRAP",
+        entityType: "Database",
+        entityId: "dev-seed",
+        ipAddress: "127.0.0.1",
+        userAgent: "seed-script",
+        metadata: JSON.stringify({
+          source: "prisma/seed.js",
+          note: "Registro criado para cobrir AuditLog no seed.",
+        }),
+        createdAt: new Date("2026-03-18T08:05:00.000Z"),
+      },
+      {
+        actorUserId: financeUser.id,
+        action: "SEED_TRASH_SAMPLE",
+        entityType: "Ticket",
+        entityId: canceledTicket?.id || "seed-ticket",
+        ipAddress: "127.0.0.1",
+        userAgent: "seed-script",
+        metadata: JSON.stringify({
+          relatedLeadId: sampleLead?.id || null,
+        }),
+        createdAt: new Date("2026-03-18T08:10:00.000Z"),
+      },
+    ],
+  });
+
+  await prisma.trashItem.deleteMany({
+    where: {
+      entityType: "Ticket",
+      entityId: canceledTicket?.id || "seed-ticket",
+    },
+  });
+
+  await prisma.trashItem.create({
+    data: {
+      moduleKey: "LIXEIRA",
+      entityType: "Ticket",
+      entityId: canceledTicket?.id || "seed-ticket",
+      label: "Ticket cancelado de exemplo",
+      payload: JSON.stringify({
+        code: canceledTicket?.code || "COM-100005",
+        company: canceledTicket?.company || "Orbit Telecom",
+        note: "Registro criado para cobrir TrashItem no seed.",
+      }),
+      deletedById: financeUser.id,
+      deletedAt: new Date("2026-03-18T08:12:00.000Z"),
+    },
+  });
+}
+
 async function main() {
   await syncDefaultModules();
   await syncSystemPresets();
@@ -1690,6 +1888,7 @@ async function main() {
   const leaderDevelopmentPreset = await getPresetBySlug("leader-development");
   const leaderFinancePreset = await getPresetBySlug("leader-finance");
   const leaderImplantacaoPreset = await getPresetBySlug("leader-implantacao");
+  const leaderSupportPreset = await getPresetBySlug("leader-support");
 
   const users = await Promise.all([
     upsertUser({
@@ -1862,18 +2061,45 @@ async function main() {
         { moduleKey: "DASHBOARD", accessLevel: "view" },
       ],
     }),
+    upsertUser({
+      name: "Sonia Suporte",
+      email: "sonia.suporte@nexu.com.br",
+      role: "leader",
+      sector: "Suporte",
+      password: "Nexu@12345",
+      accessPresetId: leaderSupportPreset?.id,
+    }),
+    upsertUser({
+      name: "Caio CS",
+      email: "caio.cs@nexu.com.br",
+      role: "basic",
+      sector: "CS",
+      password: "Nexu@12345",
+      modulePermissions: [
+        { moduleKey: "DASHBOARD", accessLevel: "view" },
+        { moduleKey: "SUPORTE", accessLevel: "view" },
+      ],
+    }),
   ]);
 
   const usersByEmail = Object.fromEntries(users.map((user) => [user.email, user]));
   const lookupContext = await upsertLookupData();
 
-  await seedBusinessData({
+  const businessContext = await seedBusinessData({
     ...lookupContext,
     usersByEmail,
   });
 
   await upsertFinanceSnapshot();
   await seedDevelopmentData({ usersByEmail });
+  await seedCoverageData({
+    ...lookupContext,
+    usersByEmail,
+  });
+  await seedOperationalRecords({
+    usersByEmail,
+    ...businessContext,
+  });
 
   console.log("Seed concluido com sucesso.");
 }

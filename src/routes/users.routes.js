@@ -57,6 +57,9 @@ const updateUserSchema = z.object({
   modulePermissions: z.array(userModulePermissionSchema).optional(),
   isActive: z.boolean().optional(),
 });
+const updateOwnProfileSchema = z.object({
+  name: z.string().trim().min(3).max(120),
+});
 
 const resetPasswordSchema = z.object({
   newPassword: passwordSchema,
@@ -187,6 +190,33 @@ usersRouter.get(
         ...item,
       })),
     });
+  },
+);
+
+usersRouter.patch(
+  "/me",
+  validate({ body: updateOwnProfileSchema }),
+  async (request, response) => {
+    const user = await prisma.user.update({
+      where: { id: request.auth.userId },
+      data: {
+        name: request.body.name,
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "USER_PROFILE_UPDATE",
+      entityType: "User",
+      entityId: user.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: {
+        name: request.body.name,
+      },
+    });
+
+    response.json({ item: serializeUser(user) });
   },
 );
 
