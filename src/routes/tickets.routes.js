@@ -4,6 +4,7 @@ import { z } from "zod";
 import { writeAuditLog } from "../lib/audit.js";
 import { TICKET_STATUSES, TICKET_TYPES } from "../lib/constants.js";
 import { HttpError } from "../lib/http-error.js";
+import { buildLeadMetadataNotes, parseLeadMetadata } from "../lib/lead-metadata.js";
 import { toCents } from "../lib/money.js";
 import { buildPageMeta, getPagination } from "../lib/pagination.js";
 import { prisma } from "../lib/prisma.js";
@@ -28,6 +29,21 @@ const ticketTaskSchema = z.object({
 
 const ticketCommentSchema = z.object({
   message: z.string().trim().min(1).max(2000),
+});
+
+const leadTaskInputSchema = z.object({
+  title: z.string().trim().min(2).max(160),
+  type: z.string().trim().min(2).max(40),
+  done: z.boolean().optional(),
+  dueDate: z.string().datetime().optional().nullable(),
+  notes: z.string().trim().max(1000).optional().nullable(),
+});
+
+const leadCatalogItemSchema = z.object({
+  catalogItemId: cuidSchema,
+  enabled: z.boolean().optional(),
+  setupAmount: z.coerce.number().min(0).optional(),
+  recurringAmount: z.coerce.number().min(0).optional(),
 });
 
 const createTicketSchema = z.object({
@@ -56,6 +72,17 @@ const createTicketSchema = z.object({
 });
 
 const updateTicketSchema = createTicketSchema.partial();
+
+function sumCatalogItems(items = []) {
+  return items.reduce(
+    (sum, item) => ({
+      setupAmount: sum.setupAmount + (item.enabled === false ? 0 : item.setupAmount || 0),
+      recurringAmount:
+        sum.recurringAmount + (item.enabled === false ? 0 : item.recurringAmount || 0),
+    }),
+    { setupAmount: 0, recurringAmount: 0 },
+  );
+}
 
 const listTicketsQuerySchema = paginationSchema.extend({
   q: z.string().trim().optional(),
@@ -191,17 +218,35 @@ ticketsRouter.patch(
   requireModuleAccess("COMMERCIAL", "edit"),
   validate({
     params: z.object({ id: cuidSchema }),
-    body: updateTicketSchema.pick({
-      status: true,
-      csStatus: true,
-      notes: true,
-      assigneeId: true,
-      technicalAssigneeId: true,
-    }),
+    body: updateTicketSchema
+      .pick({
+        status: true,
+        csStatus: true,
+        notes: true,
+        assigneeId: true,
+        technicalAssigneeId: true,
+        company: true,
+        cnpj: true,
+        contact: true,
+        email: true,
+        phone: true,
+        instance: true,
+        plan: true,
+        paymentMethod: true,
+        installment: true,
+        tasks: true,
+      })
+      .extend({
+        leadTasks: z.array(leadTaskInputSchema).optional(),
+        catalogItems: z.array(leadCatalogItemSchema).optional(),
+      }),
   }),
   async (request, response) => {
     const existingTicket = await prisma.ticket.findUnique({
       where: { id: request.params.id },
+      include: {
+        lead: true,
+      },
     });
 
     if (!existingTicket) {
@@ -209,24 +254,130 @@ ticketsRouter.patch(
     }
 
     const nextStatus = request.body.status || existingTicket.status;
-    const ticket = await prisma.ticket.update({
-      where: { id: existingTicket.id },
-      data: {
-        ...("status" in request.body ? { status: request.body.status } : {}),
-        ...("csStatus" in request.body ? { csStatus: request.body.csStatus } : {}),
-        ...("notes" in request.body ? { notes: request.body.notes } : {}),
-        ...("assigneeId" in request.body ? { assigneeId: request.body.assigneeId } : {}),
-        ...("technicalAssigneeId" in request.body
-          ? { technicalAssigneeId: request.body.technicalAssigneeId }
-          : {}),
-        ...(nextStatus === "concluido" && !existingTicket.completedAt
-          ? { completedAt: new Date() }
-          : {}),
-        ...(nextStatus === "cancelado" && !existingTicket.canceledAt
-          ? { canceledAt: new Date() }
-          : {}),
-      },
-      include: ticketInclude,
+    const totals = Array.isArray(request.body.catalogItems)
+      ? sumCatalogItems(request.body.catalogItems)
+      : null;
+    const ticket = await prisma.$transaction(async (tx) => {
+      if (existingTicket.leadId && existingTicket.lead) {
+        const currentMetadata = parseLeadMetadata(existingTicket.lead.notes);
+        const nextMetadata = {
+          ...currentMetadata,
+          ...("installment" in request.body ? { installment: request.body.installment } : {}),
+          ...("notes" in request.body ? { observations: request.body.notes } : {}),
+        };
+
+        await tx.lead.update({
+          where: { id: existingTicket.leadId },
+          data: {
+            ...("company" in request.body ? { company: request.body.company } : {}),
+            ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
+            ...("contact" in request.body ? { contact: request.body.contact } : {}),
+            ...("email" in request.body ? { email: request.body.email } : {}),
+            ...("phone" in request.body ? { phone: request.body.phone } : {}),
+            ...("paymentMethod" in request.body
+              ? { paymentMethod: request.body.paymentMethod }
+              : {}),
+            ...("plan" in request.body ? { isLite: request.body.plan === "Lite" } : {}),
+            notes: buildLeadMetadataNotes(nextMetadata),
+          },
+        });
+
+        if (Array.isArray(request.body.leadTasks)) {
+          await tx.leadTask.deleteMany({
+            where: { leadId: existingTicket.leadId },
+          });
+
+          if (request.body.leadTasks.length) {
+            await tx.leadTask.createMany({
+              data: request.body.leadTasks.map((task) => ({
+                leadId: existingTicket.leadId,
+                title: task.title,
+                type: task.type,
+                done: task.done ?? false,
+                dueDate: task.dueDate ? new Date(task.dueDate) : null,
+                notes: task.notes,
+              })),
+            });
+          }
+        }
+
+        if (Array.isArray(request.body.catalogItems)) {
+          await tx.leadCatalogItem.deleteMany({
+            where: { leadId: existingTicket.leadId },
+          });
+
+          if (request.body.catalogItems.length) {
+            await tx.leadCatalogItem.createMany({
+              data: request.body.catalogItems.map((item) => ({
+                leadId: existingTicket.leadId,
+                catalogItemId: item.catalogItemId,
+                enabled: item.enabled ?? true,
+                setupInCents: toCents(item.setupAmount),
+                recurringInCents: toCents(item.recurringAmount),
+              })),
+            });
+          }
+        }
+      }
+
+      if (Array.isArray(request.body.tasks)) {
+        await tx.ticketTask.deleteMany({
+          where: { ticketId: existingTicket.id },
+        });
+
+        if (request.body.tasks.length) {
+          await tx.ticketTask.createMany({
+            data: request.body.tasks.map((task) => ({
+              ticketId: existingTicket.id,
+              assigneeId: task.assigneeId,
+              title: task.title,
+              done: task.done ?? false,
+              dueDate: task.dueDate ? new Date(task.dueDate) : null,
+            })),
+          });
+        }
+      }
+
+      await tx.ticket.update({
+        where: { id: existingTicket.id },
+        data: {
+          ...("status" in request.body ? { status: request.body.status } : {}),
+          ...("csStatus" in request.body ? { csStatus: request.body.csStatus } : {}),
+          ...("notes" in request.body ? { notes: request.body.notes } : {}),
+          ...("company" in request.body ? { company: request.body.company } : {}),
+          ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
+          ...("contact" in request.body ? { contact: request.body.contact } : {}),
+          ...("email" in request.body ? { email: request.body.email } : {}),
+          ...("phone" in request.body ? { phone: request.body.phone } : {}),
+          ...("instance" in request.body ? { instance: request.body.instance } : {}),
+          ...("plan" in request.body ? { plan: request.body.plan } : {}),
+          ...("paymentMethod" in request.body
+            ? { paymentMethod: request.body.paymentMethod }
+            : {}),
+          ...("installment" in request.body ? { installment: request.body.installment } : {}),
+          ...("assigneeId" in request.body ? { assigneeId: request.body.assigneeId } : {}),
+          ...("technicalAssigneeId" in request.body
+            ? { technicalAssigneeId: request.body.technicalAssigneeId }
+            : {}),
+          ...(totals
+            ? {
+                setupInCents: toCents(totals.setupAmount),
+                recurringInCents: toCents(totals.recurringAmount),
+              }
+            : {}),
+          ...(nextStatus === "concluido" && !existingTicket.completedAt
+            ? { completedAt: new Date() }
+            : {}),
+          ...(nextStatus === "cancelado" && !existingTicket.canceledAt
+            ? { canceledAt: new Date() }
+            : {}),
+        },
+      });
+
+      return tx.ticket.findUnique({
+        where: { id: existingTicket.id },
+        include: ticketInclude,
+      });
     });
 
     await writeAuditLog({
