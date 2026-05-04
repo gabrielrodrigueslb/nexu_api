@@ -88,6 +88,10 @@ const createTicketSchema = z.object({
 
 const updateTicketSchema = createTicketSchema.partial();
 
+function onlyDigits(value) {
+  return String(value || '').replace(/\D/g, '');
+}
+
 function sumCatalogItems(items = []) {
   return items.reduce(
     (sum, item) => ({
@@ -169,8 +173,12 @@ function buildClosedClientsWhereSql(query) {
 
   if (query.q) {
     const likeValue = `%${query.q}%`;
+    const normalizedDigits = onlyDigits(query.q);
+    const normalizedCnpjSql = Prisma.sql`REPLACE(REPLACE(REPLACE(REPLACE(COALESCE("cnpj", ''), '.', ''), '/', ''), '-', ''), ' ', '')`;
     clauses.push(
-      Prisma.sql`("code" LIKE ${likeValue} OR "company" LIKE ${likeValue} OR "cnpj" LIKE ${likeValue})`,
+      normalizedDigits
+        ? Prisma.sql`("code" LIKE ${likeValue} OR "company" LIKE ${likeValue} OR "cnpj" LIKE ${likeValue} OR ${normalizedCnpjSql} LIKE ${`%${normalizedDigits}%`})`
+        : Prisma.sql`("code" LIKE ${likeValue} OR "company" LIKE ${likeValue} OR "cnpj" LIKE ${likeValue})`,
     );
   }
 
@@ -307,6 +315,7 @@ ticketsRouter.get(
   validate({ query: listTicketsQuerySchema }),
   async (request, response) => {
     const { page, limit, skip } = getPagination(request.query);
+    const normalizedQueryDigits = onlyDigits(request.query.q);
     const where = {
       ...(request.query.q
         ? {
@@ -314,6 +323,7 @@ ticketsRouter.get(
               { code: { contains: request.query.q } },
               { company: { contains: request.query.q } },
               { cnpj: { contains: request.query.q } },
+              ...(normalizedQueryDigits ? [{ cnpj: { contains: normalizedQueryDigits } }] : []),
             ],
           }
         : {}),
@@ -335,7 +345,7 @@ ticketsRouter.get(
 
     const whereSql = buildClosedClientsWhereSql(request.query);
 
-    const [orderedRows, total] = await prisma.$transaction([
+    const [orderedRows, totalRows] = await prisma.$transaction([
       prisma.$queryRaw`
         SELECT "id"
         FROM "Ticket"
@@ -347,8 +357,13 @@ ticketsRouter.get(
         LIMIT ${limit}
         OFFSET ${skip}
       `,
-      prisma.ticket.count({ where }),
+      prisma.$queryRaw`
+        SELECT COUNT(*) as "total"
+        FROM "Ticket"
+        ${whereSql}
+      `,
     ]);
+    const total = Number(totalRows?.[0]?.total || 0);
 
     const orderedIds = orderedRows.map((row) => row.id);
     const items =
@@ -703,22 +718,23 @@ ticketsRouter.patch(
         email: true,
         phone: true,
         instance: true,
-        plan: true,
-        planId: true,
-        paymentMethod: true,
-        installment: true,
-        tasks: true,
-      })
-      .extend({
-        leadTasks: z.array(leadTaskInputSchema).optional(),
-        catalogItems: z.array(leadCatalogItemSchema).optional(),
-        sellerId: cuidSchema.optional().nullable(),
-        sdrId: cuidSchema.optional().nullable(),
-        originId: cuidSchema.optional().nullable(),
-        indicatorId: cuidSchema.optional().nullable(),
-        consultant: z.string().trim().max(120).optional().nullable(),
-        observations: z.string().trim().max(4000).optional().nullable(),
-      }),
+          plan: true,
+          planId: true,
+          paymentMethod: true,
+          installment: true,
+          tasks: true,
+        })
+        .extend({
+          leadTasks: z.array(leadTaskInputSchema).optional(),
+          catalogItems: z.array(leadCatalogItemSchema).optional(),
+          sellerId: cuidSchema.optional().nullable(),
+          sdrId: cuidSchema.optional().nullable(),
+          originId: cuidSchema.optional().nullable(),
+          indicatorId: cuidSchema.optional().nullable(),
+          site: z.string().trim().max(255).optional().nullable(),
+          consultant: z.string().trim().max(120).optional().nullable(),
+          observations: z.string().trim().max(4000).optional().nullable(),
+        }),
   }),
   async (request, response) => {
     const existingTicket = await prisma.ticket.findUnique({
@@ -739,14 +755,15 @@ ticketsRouter.patch(
     const ticket = await prisma.$transaction(async (tx) => {
       if (existingTicket.leadId && existingTicket.lead) {
         const currentMetadata = parseLeadMetadata(existingTicket.lead.notes);
-        const nextMetadata = {
-          ...currentMetadata,
-          ...('installment' in request.body
-            ? { installment: request.body.installment }
-            : {}),
-          ...('notes' in request.body
-            ? { observations: request.body.notes }
-            : {}),
+          const nextMetadata = {
+            ...currentMetadata,
+            ...('installment' in request.body
+              ? { installment: request.body.installment }
+              : {}),
+            ...('site' in request.body ? { site: request.body.site } : {}),
+            ...('notes' in request.body
+              ? { observations: request.body.notes }
+              : {}),
           ...('observations' in request.body
             ? { observations: request.body.observations }
             : {}),

@@ -40,6 +40,7 @@ export function parseLeadMetadata(notes) {
 export function buildLeadMetadataNotes(input = {}) {
   const payload = {
     observations: normalizeString(input.observations),
+    site: normalizeString(input.site),
     installment: normalizeString(input.installment),
     consultant: normalizeString(input.consultant),
     validUntil: normalizeString(input.validUntil),
