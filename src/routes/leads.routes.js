@@ -50,6 +50,7 @@ const createLeadSchema = z.object({
   paymentMethod: z.string().trim().max(40).optional().nullable(),
   installment: z.string().trim().max(40).optional().nullable(),
   isLite: z.boolean().optional(),
+  planId: cuidSchema.optional().nullable(),
   sellerId: cuidSchema.optional().nullable(),
   sdrId: cuidSchema.optional().nullable(),
   originId: cuidSchema.optional().nullable(),
@@ -82,11 +83,20 @@ const listLeadsQuerySchema = paginationSchema.extend({
   to: z.string().datetime().optional(),
 });
 
+const leadAutofillLookupQuerySchema = z.object({
+  cnpj: z.string().trim().min(8).max(24),
+});
+
+const leadAutofillSearchQuerySchema = z.object({
+  q: z.string().trim().min(2).max(120),
+});
+
 const leadInclude = {
   seller: true,
   sdr: true,
   origin: true,
   indicator: true,
+  plan: true,
   tasks: {
     orderBy: {
       createdAt: "asc",
@@ -112,6 +122,27 @@ const leadInclude = {
   ticket: true,
 };
 
+const leadAutofillTicketInclude = {
+  linkedPlan: true,
+  lead: {
+    include: {
+      seller: true,
+      sdr: true,
+      origin: true,
+      indicator: true,
+      plan: true,
+      catalogItems: {
+        include: {
+          catalogItem: true,
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+      },
+    },
+  },
+};
+
 leadsRouter.use(authenticate);
 
 function sumCatalogItems(items = []) {
@@ -125,9 +156,102 @@ function sumCatalogItems(items = []) {
   );
 }
 
+function normalizeDocumentDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function buildCatalogAutofillItems(catalogItems = [], type) {
+  return catalogItems
+    .filter((item) => item.catalogItem?.type === type)
+    .map((item) => ({
+      name: item.catalogItem.name,
+      enabled: item.enabled !== false,
+      setup: item.setupAmount || 0,
+      recurring: item.recurringAmount || 0,
+    }));
+}
+
+function buildAutofillSnapshotFromLead(lead) {
+  return {
+    source: "lead",
+    company: lead.company,
+    cnpj: lead.cnpj || null,
+    contact: lead.contact || null,
+    email: lead.email || null,
+    phone: lead.phone || null,
+    paymentMethod: lead.paymentMethod || null,
+    installment: lead.installment || null,
+    sellerId: lead.seller?.id || null,
+    sdrId: lead.sdr?.id || lead.sdrId || null,
+    originId: lead.origin?.id || null,
+    consultant: lead.consultant || null,
+    validUntil: lead.validUntil || null,
+    isLite: lead.isLite ?? false,
+    planId: lead.plan?.id || lead.planId || null,
+    planName: lead.plan?.name || null,
+    agents: lead.agents || 0,
+    supervisors: lead.supervisors || 0,
+    admins: lead.admins || 0,
+    observations: lead.observations || null,
+    representativeId: lead.representativeId || null,
+    representativeCommission: lead.representativeCommission || 0,
+    indicatorId: lead.indicator?.id || null,
+    passThroughAmount: lead.passThroughAmount || 0,
+    products: buildCatalogAutofillItems(lead.catalogItems, "PRODUCT"),
+    integrations: buildCatalogAutofillItems(lead.catalogItems, "INTEGRATION"),
+  };
+}
+
+function buildAutofillSnapshotFromTicket(ticket) {
+  const metadata = parseLeadMetadata(ticket.notes);
+  const linkedLead = ticket.lead;
+  const linkedPlan = ticket.linkedPlan || linkedLead?.plan || null;
+
+  return {
+    source: "ticket",
+    company: linkedLead?.company || ticket.company,
+    cnpj: linkedLead?.cnpj || ticket.cnpj || null,
+    contact: linkedLead?.contact || ticket.contact || null,
+    email: linkedLead?.email || ticket.email || null,
+    phone: linkedLead?.phone || ticket.phone || null,
+    paymentMethod: linkedLead?.paymentMethod || ticket.paymentMethod || null,
+    installment: linkedLead?.installment || ticket.installment || metadata.installment || null,
+    sellerId: linkedLead?.seller?.id || ticket.assigneeId || null,
+    sdrId: linkedLead?.sdr?.id || null,
+    originId: linkedLead?.origin?.id || null,
+    consultant: linkedLead?.consultant || metadata.consultant || null,
+    validUntil: linkedLead?.validUntil || metadata.validUntil || null,
+    isLite: linkedLead?.isLite ?? String(linkedPlan?.name || ticket.plan || "").toLowerCase().includes("lite"),
+    planId: linkedLead?.plan?.id || linkedPlan?.id || ticket.planId || null,
+    planName: linkedLead?.plan?.name || linkedPlan?.name || ticket.plan || null,
+    agents: linkedLead?.agents || metadata.agents || linkedPlan?.includedAgents || 0,
+    supervisors: linkedLead?.supervisors || metadata.supervisors || linkedPlan?.includedSupervisors || 0,
+    admins: linkedLead?.admins || metadata.admins || linkedPlan?.includedAdmins || 0,
+    observations: linkedLead?.observations || metadata.observations || ticket.notes || null,
+    representativeId: linkedLead?.representativeId || metadata.representativeId || null,
+    representativeCommission:
+      linkedLead?.representativeCommission || metadata.representativeCommission || 0,
+    indicatorId: linkedLead?.indicator?.id || null,
+    passThroughAmount: linkedLead?.passThroughAmount || metadata.passThroughAmount || 0,
+    products: buildCatalogAutofillItems(linkedLead?.catalogItems, "PRODUCT"),
+    integrations: buildCatalogAutofillItems(linkedLead?.catalogItems, "INTEGRATION"),
+  };
+}
+
+function buildLeadSuggestionPayload(snapshot, extra = {}) {
+  return {
+    ...snapshot,
+    label: snapshot.company || snapshot.cnpj || "Cliente",
+    subtitle: extra.subtitle || snapshot.planName || null,
+  };
+}
+
 async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) {
   const totals = sumCatalogItems(catalogItems);
   const assigneeId = lead.sellerId || actorUserId;
+  const linkedPlan =
+    lead.plan || (lead.planId ? await tx.plan.findUnique({ where: { id: lead.planId } }) : null);
+  const planName = linkedPlan?.name || (lead.isLite ? "Lite" : "Profissional");
 
   if (lead.ticket?.id) {
     return tx.ticket.update({
@@ -138,7 +262,8 @@ async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) 
         contact: lead.contact,
         email: lead.email,
         phone: lead.phone,
-        plan: lead.isLite ? "Lite" : "Profissional",
+        plan: planName,
+        planId: lead.planId || null,
         paymentMethod: lead.paymentMethod,
         setupInCents: toCents(totals.setupAmount),
         recurringInCents: toCents(totals.recurringAmount),
@@ -161,7 +286,8 @@ async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) 
       contact: lead.contact,
       email: lead.email,
       phone: lead.phone,
-      plan: lead.isLite ? "Lite" : "Profissional",
+      plan: planName,
+      planId: lead.planId || null,
       paymentMethod: lead.paymentMethod,
       installment: parseLeadMetadata(lead.notes).installment || null,
       type: "novo",
@@ -221,6 +347,135 @@ leadsRouter.get(
 );
 
 leadsRouter.get(
+  "/lookup/by-cnpj",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ query: leadAutofillLookupQuerySchema }),
+  async (request, response) => {
+    const normalizedCnpj = normalizeDocumentDigits(request.query.cnpj);
+
+    if (normalizedCnpj.length !== 14) {
+      response.json({ item: null });
+      return;
+    }
+
+    const [leadMatchRows, ticketMatchRows] = await prisma.$transaction([
+      prisma.$queryRaw`
+        SELECT "id"
+        FROM "Lead"
+        WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE("cnpj", ''), '.', ''), '/', ''), '-', ''), ' ', '') = ${normalizedCnpj}
+        ORDER BY "updatedAt" DESC
+        LIMIT 1
+      `,
+      prisma.$queryRaw`
+        SELECT "id"
+        FROM "Ticket"
+        WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE("cnpj", ''), '.', ''), '/', ''), '-', ''), ' ', '') = ${normalizedCnpj}
+        ORDER BY "updatedAt" DESC
+        LIMIT 1
+      `,
+    ]);
+
+    const leadId = leadMatchRows?.[0]?.id;
+    if (leadId) {
+      const lead = await prisma.lead.findUnique({
+        where: { id: leadId },
+        include: leadInclude,
+      });
+
+      response.json({
+        item: lead ? buildAutofillSnapshotFromLead(serializeLead(lead)) : null,
+      });
+      return;
+    }
+
+    const ticketId = ticketMatchRows?.[0]?.id;
+    if (ticketId) {
+      const ticket = await prisma.ticket.findUnique({
+        where: { id: ticketId },
+        include: leadAutofillTicketInclude,
+      });
+
+      response.json({
+        item: ticket ? buildAutofillSnapshotFromTicket(serializeTicket(ticket)) : null,
+      });
+      return;
+    }
+
+    response.json({ item: null });
+  },
+);
+
+leadsRouter.get(
+  "/lookup/search",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ query: leadAutofillSearchQuerySchema }),
+  async (request, response) => {
+    const query = request.query.q.trim();
+
+    const [leadMatches, ticketMatches] = await prisma.$transaction([
+      prisma.lead.findMany({
+        where: {
+          company: {
+            contains: query,
+          },
+        },
+        include: leadInclude,
+        orderBy: { updatedAt: "desc" },
+        take: 5,
+      }),
+      prisma.ticket.findMany({
+        where: {
+          OR: [
+            {
+              company: {
+                contains: query,
+              },
+            },
+            {
+              instance: {
+                contains: query,
+              },
+            },
+          ],
+        },
+        include: leadAutofillTicketInclude,
+        orderBy: { updatedAt: "desc" },
+        take: 5,
+      }),
+    ]);
+
+    const items = [];
+    const seenKeys = new Set();
+
+    for (const lead of leadMatches) {
+      const snapshot = buildAutofillSnapshotFromLead(serializeLead(lead));
+      const key = `${snapshot.source}:${snapshot.company || ""}:${snapshot.cnpj || ""}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      items.push(buildLeadSuggestionPayload(snapshot, { subtitle: snapshot.cnpj || null }));
+      if (items.length >= 5) break;
+    }
+
+    if (items.length < 5) {
+      for (const ticket of ticketMatches) {
+        const snapshot = buildAutofillSnapshotFromTicket(serializeTicket(ticket));
+        const key = `${snapshot.source}:${snapshot.company || ""}:${snapshot.cnpj || ""}:${ticket.instance || ""}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        items.push(
+          buildLeadSuggestionPayload(snapshot, {
+            subtitle: ticket.instance || snapshot.cnpj || null,
+          }),
+        );
+        if (items.length >= 5) break;
+      }
+    }
+
+    response.json({ items });
+  },
+);
+
+leadsRouter.get(
   "/:id",
   requireModuleAccess("COMMERCIAL", "view"),
   validate({ params: z.object({ id: cuidSchema }) }),
@@ -255,6 +510,7 @@ leadsRouter.post(
           valueInCents: toCents(request.body.value),
           paymentMethod: request.body.paymentMethod,
           isLite: request.body.isLite ?? false,
+          planId: request.body.planId,
           notes: buildLeadMetadataNotes(request.body),
           sellerId: request.body.sellerId,
           sdrId: request.body.sdrId,
@@ -374,6 +630,7 @@ leadsRouter.patch(
             ? { paymentMethod: request.body.paymentMethod }
             : {}),
           ...("isLite" in request.body ? { isLite: request.body.isLite } : {}),
+          ...("planId" in request.body ? { planId: request.body.planId } : {}),
           ...("sellerId" in request.body ? { sellerId: request.body.sellerId } : {}),
           ...("sdrId" in request.body ? { sdrId: request.body.sdrId } : {}),
           ...("originId" in request.body ? { originId: request.body.originId } : {}),

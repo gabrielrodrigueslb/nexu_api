@@ -1,19 +1,28 @@
-import { Router } from "express";
-import { z } from "zod";
+import { Prisma } from '@prisma/client';
+import { Router } from 'express';
+import { z } from 'zod';
 
-import { writeAuditLog } from "../lib/audit.js";
-import { TICKET_STATUSES, TICKET_TYPES } from "../lib/constants.js";
-import { HttpError } from "../lib/http-error.js";
-import { buildLeadMetadataNotes, parseLeadMetadata } from "../lib/lead-metadata.js";
-import { toCents } from "../lib/money.js";
-import { buildPageMeta, getPagination } from "../lib/pagination.js";
-import { prisma } from "../lib/prisma.js";
-import { cuidSchema, instanceDomainSchema, paginationSchema } from "../lib/schemas.js";
-import { serializeLead, serializeTicket } from "../lib/serializers.js";
-import { moveEntityToTrash } from "../lib/trash.js";
-import { authenticate } from "../middlewares/authenticate.js";
-import { requireModuleAccess } from "../middlewares/require-module-access.js";
-import { validate } from "../middlewares/validate.js";
+import { writeAuditLog } from '../lib/audit.js';
+import { parseImportedClientsFile } from '../lib/client-import.js';
+import { TICKET_STATUSES, TICKET_TYPES } from '../lib/constants.js';
+import { HttpError } from '../lib/http-error.js';
+import {
+  buildLeadMetadataNotes,
+  parseLeadMetadata,
+} from '../lib/lead-metadata.js';
+import { toCents } from '../lib/money.js';
+import { buildPageMeta, getPagination } from '../lib/pagination.js';
+import { prisma } from '../lib/prisma.js';
+import {
+  cuidSchema,
+  instanceDomainSchema,
+  paginationSchema,
+} from '../lib/schemas.js';
+import { serializeLead, serializeTicket } from '../lib/serializers.js';
+import { moveEntityToTrash } from '../lib/trash.js';
+import { authenticate } from '../middlewares/authenticate.js';
+import { requireModuleAccess } from '../middlewares/require-module-access.js';
+import { validate } from '../middlewares/validate.js';
 
 export const ticketsRouter = Router();
 
@@ -29,6 +38,11 @@ const ticketTaskSchema = z.object({
 
 const ticketCommentSchema = z.object({
   message: z.string().trim().min(1).max(2000),
+});
+
+const importClientsSchema = z.object({
+  fileName: z.string().trim().min(3).max(255),
+  contentBase64: z.string().trim().min(10),
 });
 
 const leadTaskInputSchema = z.object({
@@ -56,6 +70,7 @@ const createTicketSchema = z.object({
   phone: z.string().trim().max(40).optional().nullable(),
   instance: instanceDomainSchema.optional().nullable(),
   plan: z.string().trim().max(80).optional().nullable(),
+  planId: cuidSchema.optional().nullable(),
   paymentMethod: z.string().trim().max(40).optional().nullable(),
   installment: z.string().trim().max(40).optional().nullable(),
   type: ticketTypeSchema,
@@ -76,9 +91,11 @@ const updateTicketSchema = createTicketSchema.partial();
 function sumCatalogItems(items = []) {
   return items.reduce(
     (sum, item) => ({
-      setupAmount: sum.setupAmount + (item.enabled === false ? 0 : item.setupAmount || 0),
+      setupAmount:
+        sum.setupAmount + (item.enabled === false ? 0 : item.setupAmount || 0),
       recurringAmount:
-        sum.recurringAmount + (item.enabled === false ? 0 : item.recurringAmount || 0),
+        sum.recurringAmount +
+        (item.enabled === false ? 0 : item.recurringAmount || 0),
     }),
     { setupAmount: 0, recurringAmount: 0 },
   );
@@ -98,18 +115,20 @@ const ticketInclude = {
   createdBy: true,
   assignee: true,
   technicalAssignee: true,
+  linkedPlan: true,
   lead: {
     include: {
       seller: true,
       sdr: true,
       origin: true,
       indicator: true,
+      plan: true,
       catalogItems: {
         include: {
           catalogItem: true,
         },
         orderBy: {
-          createdAt: "asc",
+          createdAt: 'asc',
         },
       },
       comments: {
@@ -117,12 +136,12 @@ const ticketInclude = {
           author: true,
         },
         orderBy: {
-          createdAt: "desc",
+          createdAt: 'desc',
         },
       },
       tasks: {
         orderBy: {
-          createdAt: "asc",
+          createdAt: 'asc',
         },
       },
     },
@@ -132,7 +151,7 @@ const ticketInclude = {
       assignee: true,
     },
     orderBy: {
-      createdAt: "asc",
+      createdAt: 'asc',
     },
   },
   comments: {
@@ -140,10 +159,59 @@ const ticketInclude = {
       author: true,
     },
     orderBy: {
-      createdAt: "desc",
+      createdAt: 'desc',
     },
   },
 };
+
+function buildClosedClientsWhereSql(query) {
+  const clauses = [];
+
+  if (query.q) {
+    const likeValue = `%${query.q}%`;
+    clauses.push(
+      Prisma.sql`("code" LIKE ${likeValue} OR "company" LIKE ${likeValue} OR "cnpj" LIKE ${likeValue})`,
+    );
+  }
+
+  if (query.status) {
+    clauses.push(Prisma.sql`"status" = ${query.status}`);
+  }
+
+  if (query.type) {
+    clauses.push(Prisma.sql`"type" = ${query.type}`);
+  }
+
+  if (query.assigneeId) {
+    clauses.push(Prisma.sql`"assigneeId" = ${query.assigneeId}`);
+  }
+
+  if (query.technicalAssigneeId) {
+    clauses.push(Prisma.sql`"technicalAssigneeId" = ${query.technicalAssigneeId}`);
+  }
+
+  if (query.from) {
+    clauses.push(Prisma.sql`"createdAt" >= ${new Date(query.from)}`);
+  }
+
+  if (query.to) {
+    clauses.push(Prisma.sql`"createdAt" <= ${new Date(query.to)}`);
+  }
+
+  if (!clauses.length) {
+    return Prisma.empty;
+  }
+
+  const combinedClauses = clauses.reduce((current, clause, index) => {
+    if (index === 0) {
+      return clause;
+    }
+
+    return Prisma.sql`${current} AND ${clause}`;
+  }, Prisma.empty);
+
+  return Prisma.sql`WHERE ${combinedClauses}`;
+}
 
 function buildClientHistoryWhere(ticket) {
   const cnpj = ticket.cnpj || null;
@@ -151,19 +219,13 @@ function buildClientHistoryWhere(ticket) {
 
   if (cnpj) {
     return {
-      OR: [
-        { cnpj },
-        { lead: { cnpj } },
-      ],
+      OR: [{ cnpj }, { lead: { cnpj } }],
     };
   }
 
   if (company) {
     return {
-      OR: [
-        { company },
-        { lead: { company } },
-      ],
+      OR: [{ company }, { lead: { company } }],
     };
   }
 
@@ -176,10 +238,7 @@ function buildDevHistoryWhere(ticket) {
 
   if (cnpj) {
     return {
-      OR: [
-        { cnpj },
-        { clientName: company || undefined },
-      ].filter(Boolean),
+      OR: [{ cnpj }, { clientName: company || undefined }].filter(Boolean),
     };
   }
 
@@ -243,8 +302,8 @@ function collectClientInstances(ticket, relatedTickets = [], lead = null) {
 ticketsRouter.use(authenticate);
 
 ticketsRouter.get(
-  "/closed-clients",
-  requireModuleAccess("COMMERCIAL", "view"),
+  '/closed-clients',
+  requireModuleAccess('COMMERCIAL', 'view'),
   validate({ query: listTicketsQuerySchema }),
   async (request, response) => {
     const { page, limit, skip } = getPagination(request.query);
@@ -260,7 +319,9 @@ ticketsRouter.get(
         : {}),
       ...(request.query.status ? { status: request.query.status } : {}),
       ...(request.query.type ? { type: request.query.type } : {}),
-      ...(request.query.assigneeId ? { assigneeId: request.query.assigneeId } : {}),
+      ...(request.query.assigneeId
+        ? { assigneeId: request.query.assigneeId }
+        : {}),
       ...(request.query.technicalAssigneeId
         ? { technicalAssigneeId: request.query.technicalAssigneeId }
         : {}),
@@ -272,27 +333,230 @@ ticketsRouter.get(
       }),
     };
 
-    const [items, total] = await prisma.$transaction([
-      prisma.ticket.findMany({
-        where,
-        include: ticketInclude,
-        orderBy: { createdAt: "desc" },
-        take: limit,
-        skip,
-      }),
+    const whereSql = buildClosedClientsWhereSql(request.query);
+
+    const [orderedRows, total] = await prisma.$transaction([
+      prisma.$queryRaw`
+        SELECT "id"
+        FROM "Ticket"
+        ${whereSql}
+        ORDER BY
+          CASE WHEN "status" = 'concluido' THEN 0 ELSE 1 END ASC,
+          "company" COLLATE NOCASE ASC,
+          "createdAt" DESC
+        LIMIT ${limit}
+        OFFSET ${skip}
+      `,
       prisma.ticket.count({ where }),
     ]);
 
+    const orderedIds = orderedRows.map((row) => row.id);
+    const items =
+      orderedIds.length > 0
+        ? await prisma.ticket.findMany({
+            where: { id: { in: orderedIds } },
+            include: ticketInclude,
+          })
+        : [];
+    const itemMap = new Map(items.map((item) => [item.id, item]));
+    const orderedItems = orderedIds.map((id) => itemMap.get(id)).filter(Boolean);
+
     response.json({
-      items: items.map(serializeTicket),
+      items: orderedItems.map(serializeTicket),
       meta: buildPageMeta({ page, limit, total }),
     });
   },
 );
 
+ticketsRouter.post(
+  '/closed-clients/import',
+  requireModuleAccess('COMMERCIAL', 'edit'),
+  validate({ body: importClientsSchema }),
+  async (request, response) => {
+    const fileBuffer = Buffer.from(request.body.contentBase64, 'base64');
+    const importedRecords = await parseImportedClientsFile({
+      fileName: request.body.fileName,
+      fileBuffer,
+    });
+
+    if (!importedRecords.length) {
+      throw new HttpError(400, 'O arquivo enviado não possui registros válidos para importar.');
+    }
+
+    const [users, plans, existingTickets] = await Promise.all([
+      prisma.user.findMany({
+        select: {
+          id: true,
+          name: true,
+          isActive: true,
+        },
+      }),
+      prisma.plan.findMany({
+        select: {
+          id: true,
+          name: true,
+        },
+      }),
+      prisma.ticket.findMany({
+        where: {
+          code: {
+            in: importedRecords.map((record) => record.code),
+          },
+        },
+        select: {
+          id: true,
+          code: true,
+          company: true,
+          cnpj: true,
+          instance: true,
+          plan: true,
+          planId: true,
+          type: true,
+          status: true,
+          setupInCents: true,
+          recurringInCents: true,
+          createdById: true,
+          assigneeId: true,
+          technicalAssigneeId: true,
+        },
+      }),
+    ]);
+
+    const existingByCode = new Map(existingTickets.map((ticket) => [ticket.code, ticket]));
+    const fallbackUser =
+      users.find((user) => user.id === request.auth.userId) ||
+      users.find((user) => user.name === 'Gabriel Admin') ||
+      users.find((user) => user.isActive) ||
+      users[0];
+
+    if (!fallbackUser) {
+      throw new HttpError(400, 'Nenhum usuário disponível para vincular a importação.');
+    }
+
+    let created = 0;
+    let updated = 0;
+    let unchanged = 0;
+    const createRows = [];
+    const updateOperations = [];
+
+    for (const record of importedRecords) {
+      const assignee =
+        users.find((user) => user.name === record.assigneeName && user.isActive) ||
+        users.find((user) => user.name === record.assigneeName) ||
+        fallbackUser;
+      const linkedPlan =
+        plans.find((plan) => plan.name === record.plan) ||
+        plans.find(
+          (plan) =>
+            plan.name.toLowerCase() === String(record.plan || '').trim().toLowerCase(),
+        ) ||
+        null;
+
+      const nextData = {
+        company: record.company,
+        cnpj: record.cnpj || null,
+        instance: record.instance || null,
+        plan: record.plan || null,
+        planId: linkedPlan?.id || null,
+        type: 'novo',
+        status: record.status,
+        setupInCents: 0,
+        recurringInCents: toCents(record.monthlyCost || 0),
+        createdById: fallbackUser.id,
+        assigneeId: assignee.id,
+        technicalAssigneeId: null,
+        completedAt: record.status === 'concluido' ? new Date() : null,
+        canceledAt: record.status === 'cancelado' ? new Date() : null,
+      };
+
+      const existing = existingByCode.get(record.code);
+
+      if (!existing) {
+        createRows.push({
+          code: record.code,
+          ...nextData,
+        });
+        created += 1;
+        continue;
+      }
+
+      const hasChanges =
+        existing.company !== nextData.company ||
+        (existing.cnpj || null) !== nextData.cnpj ||
+        (existing.instance || null) !== nextData.instance ||
+        (existing.plan || null) !== nextData.plan ||
+        (existing.planId || null) !== nextData.planId ||
+        existing.type !== nextData.type ||
+        existing.status !== nextData.status ||
+        existing.setupInCents !== nextData.setupInCents ||
+        existing.recurringInCents !== nextData.recurringInCents ||
+        existing.createdById !== nextData.createdById ||
+        existing.assigneeId !== nextData.assigneeId ||
+        (existing.technicalAssigneeId || null) !== nextData.technicalAssigneeId;
+
+      if (!hasChanges) {
+        unchanged += 1;
+        continue;
+      }
+
+      updateOperations.push({
+        id: existing.id,
+        data: nextData,
+      });
+      updated += 1;
+    }
+
+    for (let index = 0; index < createRows.length; index += 200) {
+      const chunk = createRows.slice(index, index + 200);
+      if (!chunk.length) continue;
+      await prisma.ticket.createMany({
+        data: chunk,
+        skipDuplicates: true,
+      });
+    }
+
+    for (let index = 0; index < updateOperations.length; index += 50) {
+      const chunk = updateOperations.slice(index, index + 50);
+      await prisma.$transaction(
+        chunk.map((operation) =>
+          prisma.ticket.update({
+            where: { id: operation.id },
+            data: operation.data,
+          }),
+        ),
+      );
+    }
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: 'COMMERCIAL_CLIENT_IMPORT',
+      entityType: 'Ticket',
+      entityId: null,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: {
+        fileName: request.body.fileName,
+        processed: importedRecords.length,
+        created,
+        updated,
+        unchanged,
+      },
+    });
+
+    response.status(201).json({
+      meta: {
+        processed: importedRecords.length,
+        created,
+        updated,
+        unchanged,
+      },
+    });
+  },
+);
+
 ticketsRouter.get(
-  "/closed-clients/:id",
-  requireModuleAccess("COMMERCIAL", "view"),
+  '/closed-clients/:id',
+  requireModuleAccess('COMMERCIAL', 'view'),
   validate({ params: z.object({ id: cuidSchema }) }),
   async (request, response) => {
     const ticket = await prisma.ticket.findUnique({
@@ -301,7 +565,7 @@ ticketsRouter.get(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket nÃ£o encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     response.json({ item: serializeTicket(ticket) });
@@ -309,8 +573,8 @@ ticketsRouter.get(
 );
 
 ticketsRouter.get(
-  "/closed-clients/:id/details",
-  requireModuleAccess("COMMERCIAL", "view"),
+  '/closed-clients/:id/details',
+  requireModuleAccess('COMMERCIAL', 'view'),
   validate({ params: z.object({ id: cuidSchema }) }),
   async (request, response) => {
     const ticket = await prisma.ticket.findUnique({
@@ -319,7 +583,7 @@ ticketsRouter.get(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket nÃ£o encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     const historyWhere = buildClientHistoryWhere(ticket);
@@ -329,7 +593,7 @@ ticketsRouter.get(
       prisma.ticket.findMany({
         where: historyWhere,
         include: ticketInclude,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
       }),
       devHistoryWhere
         ? prisma.devTicket.findMany({
@@ -348,7 +612,7 @@ ticketsRouter.get(
                 },
               },
             },
-            orderBy: { createdAt: "desc" },
+            orderBy: { createdAt: 'desc' },
           })
         : Promise.resolve([]),
       ticket.leadId
@@ -359,6 +623,7 @@ ticketsRouter.get(
               sdr: true,
               origin: true,
               indicator: true,
+              plan: true,
               indicatorPayment: {
                 include: {
                   paidBy: true,
@@ -369,7 +634,7 @@ ticketsRouter.get(
                   catalogItem: true,
                 },
                 orderBy: {
-                  createdAt: "asc",
+                  createdAt: 'asc',
                 },
               },
               comments: {
@@ -377,12 +642,12 @@ ticketsRouter.get(
                   author: true,
                 },
                 orderBy: {
-                  createdAt: "desc",
+                  createdAt: 'desc',
                 },
               },
               tasks: {
                 orderBy: {
-                  createdAt: "asc",
+                  createdAt: 'asc',
                 },
               },
             },
@@ -390,7 +655,11 @@ ticketsRouter.get(
         : Promise.resolve(null),
     ]);
 
-    const instanceData = collectClientInstances(ticket, relatedTickets, leadWithExtras);
+    const instanceData = collectClientInstances(
+      ticket,
+      relatedTickets,
+      leadWithExtras,
+    );
 
     response.json({
       item: {
@@ -402,7 +671,10 @@ ticketsRouter.get(
         summary: {
           totalTickets: relatedTickets.length,
           totalDevTickets: devTickets.length,
-          totalSetupAmount: relatedTickets.reduce((sum, item) => sum + (item.setupInCents || 0), 0),
+          totalSetupAmount: relatedTickets.reduce(
+            (sum, item) => sum + (item.setupInCents || 0),
+            0,
+          ),
           totalRecurringAmount: relatedTickets.reduce(
             (sum, item) => sum + (item.recurringInCents || 0),
             0,
@@ -414,8 +686,8 @@ ticketsRouter.get(
 );
 
 ticketsRouter.patch(
-  "/closed-clients/:id",
-  requireModuleAccess("COMMERCIAL", "edit"),
+  '/closed-clients/:id',
+  requireModuleAccess('COMMERCIAL', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: updateTicketSchema
@@ -432,6 +704,7 @@ ticketsRouter.patch(
         phone: true,
         instance: true,
         plan: true,
+        planId: true,
         paymentMethod: true,
         installment: true,
         tasks: true,
@@ -439,6 +712,12 @@ ticketsRouter.patch(
       .extend({
         leadTasks: z.array(leadTaskInputSchema).optional(),
         catalogItems: z.array(leadCatalogItemSchema).optional(),
+        sellerId: cuidSchema.optional().nullable(),
+        sdrId: cuidSchema.optional().nullable(),
+        originId: cuidSchema.optional().nullable(),
+        indicatorId: cuidSchema.optional().nullable(),
+        consultant: z.string().trim().max(120).optional().nullable(),
+        observations: z.string().trim().max(4000).optional().nullable(),
       }),
   }),
   async (request, response) => {
@@ -450,7 +729,7 @@ ticketsRouter.patch(
     });
 
     if (!existingTicket) {
-      throw new HttpError(404, "Ticket nÃ£o encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     const nextStatus = request.body.status || existingTicket.status;
@@ -462,22 +741,51 @@ ticketsRouter.patch(
         const currentMetadata = parseLeadMetadata(existingTicket.lead.notes);
         const nextMetadata = {
           ...currentMetadata,
-          ...("installment" in request.body ? { installment: request.body.installment } : {}),
-          ...("notes" in request.body ? { observations: request.body.notes } : {}),
+          ...('installment' in request.body
+            ? { installment: request.body.installment }
+            : {}),
+          ...('notes' in request.body
+            ? { observations: request.body.notes }
+            : {}),
+          ...('observations' in request.body
+            ? { observations: request.body.observations }
+            : {}),
+          ...('consultant' in request.body
+            ? { consultant: request.body.consultant }
+            : {}),
         };
 
         await tx.lead.update({
           where: { id: existingTicket.leadId },
           data: {
-            ...("company" in request.body ? { company: request.body.company } : {}),
-            ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
-            ...("contact" in request.body ? { contact: request.body.contact } : {}),
-            ...("email" in request.body ? { email: request.body.email } : {}),
-            ...("phone" in request.body ? { phone: request.body.phone } : {}),
-            ...("paymentMethod" in request.body
+            ...('company' in request.body
+              ? { company: request.body.company }
+              : {}),
+            ...('cnpj' in request.body ? { cnpj: request.body.cnpj } : {}),
+            ...('contact' in request.body
+              ? { contact: request.body.contact }
+              : {}),
+            ...('email' in request.body ? { email: request.body.email } : {}),
+            ...('phone' in request.body ? { phone: request.body.phone } : {}),
+            ...('paymentMethod' in request.body
               ? { paymentMethod: request.body.paymentMethod }
               : {}),
-            ...("plan" in request.body ? { isLite: request.body.plan === "Lite" } : {}),
+            ...('planId' in request.body
+              ? { planId: request.body.planId }
+              : {}),
+            ...('sellerId' in request.body
+              ? { sellerId: request.body.sellerId }
+              : {}),
+            ...('sdrId' in request.body ? { sdrId: request.body.sdrId } : {}),
+            ...('originId' in request.body
+              ? { originId: request.body.originId }
+              : {}),
+            ...('indicatorId' in request.body
+              ? { indicatorId: request.body.indicatorId }
+              : {}),
+            ...('plan' in request.body
+              ? { isLite: request.body.plan === 'Lite' }
+              : {}),
             notes: buildLeadMetadataNotes(nextMetadata),
           },
         });
@@ -541,22 +849,35 @@ ticketsRouter.patch(
       await tx.ticket.update({
         where: { id: existingTicket.id },
         data: {
-          ...("status" in request.body ? { status: request.body.status } : {}),
-          ...("csStatus" in request.body ? { csStatus: request.body.csStatus } : {}),
-          ...("notes" in request.body ? { notes: request.body.notes } : {}),
-          ...("company" in request.body ? { company: request.body.company } : {}),
-          ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
-          ...("contact" in request.body ? { contact: request.body.contact } : {}),
-          ...("email" in request.body ? { email: request.body.email } : {}),
-          ...("phone" in request.body ? { phone: request.body.phone } : {}),
-          ...("instance" in request.body ? { instance: request.body.instance } : {}),
-          ...("plan" in request.body ? { plan: request.body.plan } : {}),
-          ...("paymentMethod" in request.body
+          ...('status' in request.body ? { status: request.body.status } : {}),
+          ...('csStatus' in request.body
+            ? { csStatus: request.body.csStatus }
+            : {}),
+          ...('notes' in request.body ? { notes: request.body.notes } : {}),
+          ...('company' in request.body
+            ? { company: request.body.company }
+            : {}),
+          ...('cnpj' in request.body ? { cnpj: request.body.cnpj } : {}),
+          ...('contact' in request.body
+            ? { contact: request.body.contact }
+            : {}),
+          ...('email' in request.body ? { email: request.body.email } : {}),
+          ...('phone' in request.body ? { phone: request.body.phone } : {}),
+          ...('instance' in request.body
+            ? { instance: request.body.instance }
+            : {}),
+          ...('plan' in request.body ? { plan: request.body.plan } : {}),
+          ...('planId' in request.body ? { planId: request.body.planId } : {}),
+          ...('paymentMethod' in request.body
             ? { paymentMethod: request.body.paymentMethod }
             : {}),
-          ...("installment" in request.body ? { installment: request.body.installment } : {}),
-          ...("assigneeId" in request.body ? { assigneeId: request.body.assigneeId } : {}),
-          ...("technicalAssigneeId" in request.body
+          ...('installment' in request.body
+            ? { installment: request.body.installment }
+            : {}),
+          ...('assigneeId' in request.body
+            ? { assigneeId: request.body.assigneeId }
+            : {}),
+          ...('technicalAssigneeId' in request.body
             ? { technicalAssigneeId: request.body.technicalAssigneeId }
             : {}),
           ...(totals
@@ -565,10 +886,10 @@ ticketsRouter.patch(
                 recurringInCents: toCents(totals.recurringAmount),
               }
             : {}),
-          ...(nextStatus === "concluido" && !existingTicket.completedAt
+          ...(nextStatus === 'concluido' && !existingTicket.completedAt
             ? { completedAt: new Date() }
             : {}),
-          ...(nextStatus === "cancelado" && !existingTicket.canceledAt
+          ...(nextStatus === 'cancelado' && !existingTicket.canceledAt
             ? { canceledAt: new Date() }
             : {}),
         },
@@ -582,8 +903,8 @@ ticketsRouter.patch(
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "COMMERCIAL_TICKET_UPDATE",
-      entityType: "Ticket",
+      action: 'COMMERCIAL_TICKET_UPDATE',
+      entityType: 'Ticket',
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
@@ -595,8 +916,8 @@ ticketsRouter.patch(
 );
 
 ticketsRouter.patch(
-  "/closed-clients/:id/confirm-payment",
-  requireModuleAccess("COMMERCIAL", "edit"),
+  '/closed-clients/:id/confirm-payment',
+  requireModuleAccess('COMMERCIAL', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
   }),
@@ -606,22 +927,22 @@ ticketsRouter.patch(
     });
 
     if (!existingTicket) {
-      throw new HttpError(404, "Ticket nÃ£o encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     const ticket = await prisma.ticket.update({
       where: { id: existingTicket.id },
       data: {
-        status: "pagamento_confirmado",
-        csStatus: existingTicket.csStatus || "Briefing",
+        status: 'pagamento_confirmado',
+        csStatus: existingTicket.csStatus || 'Briefing',
       },
       include: ticketInclude,
     });
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "COMMERCIAL_TICKET_PAYMENT_CONFIRM",
-      entityType: "Ticket",
+      action: 'COMMERCIAL_TICKET_PAYMENT_CONFIRM',
+      entityType: 'Ticket',
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
@@ -632,8 +953,8 @@ ticketsRouter.patch(
 );
 
 ticketsRouter.patch(
-  "/closed-clients/:id/approve-implementation",
-  requireModuleAccess("COMMERCIAL", "edit"),
+  '/closed-clients/:id/approve-implementation',
+  requireModuleAccess('COMMERCIAL', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
   }),
@@ -643,26 +964,29 @@ ticketsRouter.patch(
     });
 
     if (!existingTicket) {
-      throw new HttpError(404, "Ticket não encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
-    if (existingTicket.status !== "pagamento_confirmado") {
-      throw new HttpError(400, "Confirme o pagamento antes de aprovar a implantação");
+    if (existingTicket.status !== 'pagamento_confirmado') {
+      throw new HttpError(
+        400,
+        'Confirme o pagamento antes de aprovar a implantação',
+      );
     }
 
     const ticket = await prisma.ticket.update({
       where: { id: existingTicket.id },
       data: {
-        status: "em_implantacao",
-        csStatus: existingTicket.csStatus || "Briefing",
+        status: 'em_implantacao',
+        csStatus: existingTicket.csStatus || 'Briefing',
       },
       include: ticketInclude,
     });
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "COMMERCIAL_TICKET_IMPLEMENTATION_APPROVE",
-      entityType: "Ticket",
+      action: 'COMMERCIAL_TICKET_IMPLEMENTATION_APPROVE',
+      entityType: 'Ticket',
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
@@ -673,8 +997,8 @@ ticketsRouter.patch(
 );
 
 ticketsRouter.post(
-  "/closed-clients/:id/comments",
-  requireModuleAccess("COMMERCIAL", "edit"),
+  '/closed-clients/:id/comments',
+  requireModuleAccess('COMMERCIAL', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: ticketCommentSchema,
@@ -685,7 +1009,7 @@ ticketsRouter.post(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket não encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     const comment = await prisma.ticketComment.create({
@@ -701,8 +1025,8 @@ ticketsRouter.post(
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "COMMERCIAL_TICKET_COMMENT_CREATE",
-      entityType: "TicketComment",
+      action: 'COMMERCIAL_TICKET_COMMENT_CREATE',
+      entityType: 'TicketComment',
       entityId: comment.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
@@ -714,8 +1038,8 @@ ticketsRouter.post(
 );
 
 ticketsRouter.get(
-  "/",
-  requireModuleAccess("IMPLANTACAO", "view"),
+  '/',
+  requireModuleAccess('IMPLANTACAO', 'view'),
   validate({ query: listTicketsQuerySchema }),
   async (request, response) => {
     const { page, limit, skip } = getPagination(request.query);
@@ -731,7 +1055,9 @@ ticketsRouter.get(
         : {}),
       ...(request.query.status ? { status: request.query.status } : {}),
       ...(request.query.type ? { type: request.query.type } : {}),
-      ...(request.query.assigneeId ? { assigneeId: request.query.assigneeId } : {}),
+      ...(request.query.assigneeId
+        ? { assigneeId: request.query.assigneeId }
+        : {}),
       ...(request.query.technicalAssigneeId
         ? { technicalAssigneeId: request.query.technicalAssigneeId }
         : {}),
@@ -747,7 +1073,7 @@ ticketsRouter.get(
       prisma.ticket.findMany({
         where,
         include: ticketInclude,
-        orderBy: { createdAt: "desc" },
+        orderBy: { createdAt: 'desc' },
         take: limit,
         skip,
       }),
@@ -762,8 +1088,8 @@ ticketsRouter.get(
 );
 
 ticketsRouter.get(
-  "/:id",
-  requireModuleAccess("IMPLANTACAO", "view"),
+  '/:id',
+  requireModuleAccess('IMPLANTACAO', 'view'),
   validate({ params: z.object({ id: cuidSchema }) }),
   async (request, response) => {
     const ticket = await prisma.ticket.findUnique({
@@ -772,7 +1098,7 @@ ticketsRouter.get(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket não encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     response.json({ item: serializeTicket(ticket) });
@@ -780,8 +1106,8 @@ ticketsRouter.get(
 );
 
 ticketsRouter.post(
-  "/",
-  requireModuleAccess("IMPLANTACAO", "edit"),
+  '/',
+  requireModuleAccess('IMPLANTACAO', 'edit'),
   validate({ body: createTicketSchema }),
   async (request, response) => {
     const ticket = await prisma.ticket.create({
@@ -807,8 +1133,10 @@ ticketsRouter.post(
         createdById: request.auth.userId,
         assigneeId: request.body.assigneeId,
         technicalAssigneeId: request.body.technicalAssigneeId,
-        completedAt: request.body.completedAt ? new Date(request.body.completedAt) : null,
-        canceledAt: request.body.status === "cancelado" ? new Date() : null,
+        completedAt: request.body.completedAt
+          ? new Date(request.body.completedAt)
+          : null,
+        canceledAt: request.body.status === 'cancelado' ? new Date() : null,
         tasks: request.body.tasks?.length
           ? {
               create: request.body.tasks.map((task) => ({
@@ -825,8 +1153,8 @@ ticketsRouter.post(
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "TICKET_CREATE",
-      entityType: "Ticket",
+      action: 'TICKET_CREATE',
+      entityType: 'Ticket',
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
@@ -837,8 +1165,8 @@ ticketsRouter.post(
 );
 
 ticketsRouter.patch(
-  "/:id",
-  requireModuleAccess("IMPLANTACAO", "edit"),
+  '/:id',
+  requireModuleAccess('IMPLANTACAO', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: updateTicketSchema,
@@ -849,7 +1177,7 @@ ticketsRouter.patch(
     });
 
     if (!existingTicket) {
-      throw new HttpError(404, "Ticket não encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     const nextStatus = request.body.status || existingTicket.status;
@@ -857,39 +1185,53 @@ ticketsRouter.patch(
     const ticket = await prisma.ticket.update({
       where: { id: request.params.id },
       data: {
-        ...("code" in request.body ? { code: request.body.code } : {}),
-        ...("leadId" in request.body ? { leadId: request.body.leadId } : {}),
-        ...("company" in request.body ? { company: request.body.company } : {}),
-        ...("cnpj" in request.body ? { cnpj: request.body.cnpj } : {}),
-        ...("contact" in request.body ? { contact: request.body.contact } : {}),
-        ...("email" in request.body ? { email: request.body.email } : {}),
-        ...("phone" in request.body ? { phone: request.body.phone } : {}),
-        ...("instance" in request.body ? { instance: request.body.instance } : {}),
-        ...("plan" in request.body ? { plan: request.body.plan } : {}),
-        ...("paymentMethod" in request.body
+        ...('code' in request.body ? { code: request.body.code } : {}),
+        ...('leadId' in request.body ? { leadId: request.body.leadId } : {}),
+        ...('company' in request.body ? { company: request.body.company } : {}),
+        ...('cnpj' in request.body ? { cnpj: request.body.cnpj } : {}),
+        ...('contact' in request.body ? { contact: request.body.contact } : {}),
+        ...('email' in request.body ? { email: request.body.email } : {}),
+        ...('phone' in request.body ? { phone: request.body.phone } : {}),
+        ...('instance' in request.body
+          ? { instance: request.body.instance }
+          : {}),
+        ...('plan' in request.body ? { plan: request.body.plan } : {}),
+        ...('paymentMethod' in request.body
           ? { paymentMethod: request.body.paymentMethod }
           : {}),
-        ...("installment" in request.body ? { installment: request.body.installment } : {}),
-        ...("type" in request.body ? { type: request.body.type } : {}),
-        ...("status" in request.body ? { status: request.body.status } : {}),
-        ...("csStatus" in request.body ? { csStatus: request.body.csStatus } : {}),
-        ...("notes" in request.body ? { notes: request.body.notes } : {}),
-        ...("cancelReason" in request.body ? { cancelReason: request.body.cancelReason } : {}),
-        ...("setupAmount" in request.body
+        ...('installment' in request.body
+          ? { installment: request.body.installment }
+          : {}),
+        ...('type' in request.body ? { type: request.body.type } : {}),
+        ...('status' in request.body ? { status: request.body.status } : {}),
+        ...('csStatus' in request.body
+          ? { csStatus: request.body.csStatus }
+          : {}),
+        ...('notes' in request.body ? { notes: request.body.notes } : {}),
+        ...('cancelReason' in request.body
+          ? { cancelReason: request.body.cancelReason }
+          : {}),
+        ...('setupAmount' in request.body
           ? { setupInCents: toCents(request.body.setupAmount) }
           : {}),
-        ...("recurringAmount" in request.body
+        ...('recurringAmount' in request.body
           ? { recurringInCents: toCents(request.body.recurringAmount) }
           : {}),
-        ...("assigneeId" in request.body ? { assigneeId: request.body.assigneeId } : {}),
-        ...("technicalAssigneeId" in request.body
+        ...('assigneeId' in request.body
+          ? { assigneeId: request.body.assigneeId }
+          : {}),
+        ...('technicalAssigneeId' in request.body
           ? { technicalAssigneeId: request.body.technicalAssigneeId }
           : {}),
-        ...("completedAt" in request.body
-          ? { completedAt: request.body.completedAt ? new Date(request.body.completedAt) : null }
+        ...('completedAt' in request.body
+          ? {
+              completedAt: request.body.completedAt
+                ? new Date(request.body.completedAt)
+                : null,
+            }
           : {}),
-        ...(nextStatus === "cancelado" ? { canceledAt: new Date() } : {}),
-        ...(nextStatus === "concluido" && !existingTicket.completedAt
+        ...(nextStatus === 'cancelado' ? { canceledAt: new Date() } : {}),
+        ...(nextStatus === 'concluido' && !existingTicket.completedAt
           ? { completedAt: new Date() }
           : {}),
       },
@@ -898,8 +1240,8 @@ ticketsRouter.patch(
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "TICKET_UPDATE",
-      entityType: "Ticket",
+      action: 'TICKET_UPDATE',
+      entityType: 'Ticket',
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
@@ -911,8 +1253,8 @@ ticketsRouter.patch(
 );
 
 ticketsRouter.delete(
-  "/:id",
-  requireModuleAccess("IMPLANTACAO", "manage"),
+  '/:id',
+  requireModuleAccess('IMPLANTACAO', 'manage'),
   validate({
     params: z.object({ id: cuidSchema }),
   }),
@@ -926,14 +1268,14 @@ ticketsRouter.delete(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket não encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     await prisma.$transaction(async (tx) => {
       await moveEntityToTrash({
         tx,
-        moduleKey: "IMPLANTACAO",
-        entityType: "Ticket",
+        moduleKey: 'IMPLANTACAO',
+        entityType: 'Ticket',
         entityId: ticket.id,
         label: ticket.code,
         payload: {
@@ -994,8 +1336,8 @@ ticketsRouter.delete(
 );
 
 ticketsRouter.post(
-  "/:id/tasks",
-  requireModuleAccess("IMPLANTACAO", "edit"),
+  '/:id/tasks',
+  requireModuleAccess('IMPLANTACAO', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: ticketTaskSchema,
@@ -1006,7 +1348,7 @@ ticketsRouter.post(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket não encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     const task = await prisma.ticketTask.create({
@@ -1024,8 +1366,8 @@ ticketsRouter.post(
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "TICKET_TASK_CREATE",
-      entityType: "TicketTask",
+      action: 'TICKET_TASK_CREATE',
+      entityType: 'TicketTask',
       entityId: task.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
@@ -1037,8 +1379,8 @@ ticketsRouter.post(
 );
 
 ticketsRouter.post(
-  "/:id/comments",
-  requireModuleAccess("IMPLANTACAO", "edit"),
+  '/:id/comments',
+  requireModuleAccess('IMPLANTACAO', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: ticketCommentSchema,
@@ -1049,7 +1391,7 @@ ticketsRouter.post(
     });
 
     if (!ticket) {
-      throw new HttpError(404, "Ticket não encontrado");
+      throw new HttpError(404, 'Ticket não encontrado');
     }
 
     const comment = await prisma.ticketComment.create({
@@ -1065,8 +1407,8 @@ ticketsRouter.post(
 
     await writeAuditLog({
       actorUserId: request.auth.userId,
-      action: "TICKET_COMMENT_CREATE",
-      entityType: "TicketComment",
+      action: 'TICKET_COMMENT_CREATE',
+      entityType: 'TicketComment',
       entityId: comment.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,

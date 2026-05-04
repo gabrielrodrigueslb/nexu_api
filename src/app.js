@@ -47,7 +47,7 @@ export function createApp() {
   );
   app.use(hpp());
   app.use(compression());
-  app.use(express.json({ limit: "200kb" }));
+  app.use(express.json({ limit: "25mb" }));
   app.use(express.urlencoded({ extended: false, limit: "50kb" }));
 
   app.use("/api", apiRouter);

@@ -38,6 +38,22 @@ function buildCreatedAtFilter(query) {
   };
 }
 
+function getDevPriorityBucket(ticket) {
+  if (ticket.criticalBug) {
+    return { label: "Crítica", tone: "red" };
+  }
+
+  if (ticket.complexity === "Complexa") {
+    return { label: "Alta", tone: "orange" };
+  }
+
+  if (ticket.complexity === "Media") {
+    return { label: "Média", tone: "yellow" };
+  }
+
+  return { label: "Baixa", tone: "green" };
+}
+
 overviewRouter.use(authenticate);
 
 overviewRouter.get(
@@ -47,7 +63,7 @@ overviewRouter.get(
   async (request, response) => {
     const whereByCreatedAt = buildCreatedAtFilter(request.query);
 
-    const [leads, tickets] = await Promise.all([
+    const [leads, tickets, devTickets] = await Promise.all([
       prisma.lead.findMany({
         where: whereByCreatedAt,
         include: {
@@ -73,6 +89,15 @@ overviewRouter.get(
               },
             },
           },
+        },
+      }),
+      prisma.devTicket.findMany({
+        where: whereByCreatedAt,
+        select: {
+          id: true,
+          complexity: true,
+          criticalBug: true,
+          devStatus: true,
         },
       }),
     ]);
@@ -130,6 +155,19 @@ overviewRouter.get(
       return accumulator;
     }, {});
 
+    const devPriorityRows = countRows(devTickets.map((ticket) => getDevPriorityBucket(ticket).label));
+    const devPriorityToneMap = Object.fromEntries(
+      devTickets.map((ticket) => {
+        const bucket = getDevPriorityBucket(ticket);
+        return [bucket.label, bucket.tone];
+      }),
+    );
+    const devPriorityMeta = devPriorityRows.map(([label, count]) => ({
+      label,
+      count,
+      tone: devPriorityToneMap[label] || "gray",
+    }));
+
     response.json({
       totals: {
         expectedSetup,
@@ -144,8 +182,8 @@ overviewRouter.get(
         totalCommercialTickets: tickets.length,
         newClientsCount: tickets.filter((ticket) => ticket.type === "novo").length,
         upsellCount: tickets.filter((ticket) => ticket.type === "upsell").length,
-        totalDevTickets: 0,
-        criticalDevCount: 0,
+        totalDevTickets: devTickets.length,
+        criticalDevCount: devTickets.filter((ticket) => ticket.criticalBug).length,
       },
       charts: {
         products: productRows,
@@ -181,7 +219,7 @@ overviewRouter.get(
             tone: "red",
           },
         ],
-        devPriorities: [],
+        devPriorities: devPriorityMeta,
       },
     });
   },

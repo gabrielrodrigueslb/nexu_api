@@ -34,6 +34,19 @@ const simpleActiveNameSchema = z.object({
   active: z.boolean().optional(),
 });
 
+const planSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  description: z.string().trim().max(2000).optional().nullable(),
+  features: z.string().trim().max(4000).optional().nullable(),
+  restrictions: z.string().trim().max(4000).optional().nullable(),
+  setupFee: z.coerce.number().min(0).optional(),
+  monthlyFee: z.coerce.number().min(0).optional(),
+  includedAgents: z.coerce.number().int().min(0).optional(),
+  includedSupervisors: z.coerce.number().int().min(0).optional(),
+  includedAdmins: z.coerce.number().int().min(0).optional(),
+  active: z.boolean().optional(),
+});
+
 const indicatorSchema = z.object({
   name: z.string().trim().min(2).max(120),
   docType: z.enum(DOC_TYPES),
@@ -70,7 +83,7 @@ async function ensureAnyModuleAccess(request, moduleKeys, requiredLevel = "view"
 catalogRouter.get("/lookups", async (request, response) => {
   await ensureAnyModuleAccess(request, ["CADASTROS", "COMMERCIAL", "DASHBOARD"], "view");
 
-  const [origins, sdrs, indicators, items] = await prisma.$transaction([
+  const [origins, sdrs, indicators, items, plans] = await prisma.$transaction([
     prisma.origin.findMany({
       where: { active: true },
       orderBy: { name: "asc" },
@@ -92,6 +105,10 @@ catalogRouter.get("/lookups", async (request, response) => {
       where: { active: true },
       orderBy: [{ type: "asc" }, { name: "asc" }],
     }),
+    prisma.plan.findMany({
+      where: { active: true },
+      orderBy: [{ name: "asc" }],
+    }),
   ]);
 
   response.json({
@@ -104,6 +121,11 @@ catalogRouter.get("/lookups", async (request, response) => {
     indicators,
     products: items.filter((item) => item.type === "PRODUCT"),
     integrations: items.filter((item) => item.type === "INTEGRATION"),
+    plans: plans.map((plan) => ({
+      ...plan,
+      setupFee: plan.setupFeeInCents / 100,
+      monthlyFee: plan.monthlyFeeInCents / 100,
+    })),
   });
 });
 
@@ -382,3 +404,164 @@ mountSimpleCrud({
   updateAction: "INDICATOR_UPDATE",
   schema: indicatorSchema,
 });
+
+catalogRouter.get(
+  "/plans",
+  requireModuleAccess("CADASTROS", "view"),
+  async (_request, response) => {
+    const items = await prisma.plan.findMany({
+      orderBy: [{ createdAt: "desc" }],
+    });
+
+    response.json({
+      items: items.map((plan) => ({
+        ...plan,
+        setupFee: plan.setupFeeInCents / 100,
+        monthlyFee: plan.monthlyFeeInCents / 100,
+      })),
+    });
+  },
+);
+
+catalogRouter.post(
+  "/plans",
+  requireModuleAccess("CADASTROS", "edit"),
+  validate({ body: planSchema }),
+  async (request, response) => {
+    const item = await prisma.plan.create({
+      data: {
+        name: request.body.name,
+        slug: slugify(`plan-${request.body.name}`),
+        description: request.body.description,
+        features: request.body.features,
+        restrictions: request.body.restrictions,
+        setupFeeInCents: Math.round((request.body.setupFee || 0) * 100),
+        monthlyFeeInCents: Math.round((request.body.monthlyFee || 0) * 100),
+        includedAgents: request.body.includedAgents ?? 0,
+        includedSupervisors: request.body.includedSupervisors ?? 0,
+        includedAdmins: request.body.includedAdmins ?? 0,
+        active: request.body.active ?? true,
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "PLAN_CREATE",
+      entityType: "Plan",
+      entityId: item.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.status(201).json({
+      item: {
+        ...item,
+        setupFee: item.setupFeeInCents / 100,
+        monthlyFee: item.monthlyFeeInCents / 100,
+      },
+    });
+  },
+);
+
+catalogRouter.patch(
+  "/plans/:id",
+  requireModuleAccess("CADASTROS", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: planSchema.partial(),
+  }),
+  async (request, response) => {
+    const existing = await prisma.plan.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!existing) {
+      throw new HttpError(404, "Registro não encontrado");
+    }
+
+    const name = request.body.name || existing.name;
+    const item = await prisma.plan.update({
+      where: { id: request.params.id },
+      data: {
+        ...("name" in request.body ? { name: request.body.name } : {}),
+        ...("description" in request.body ? { description: request.body.description } : {}),
+        ...("features" in request.body ? { features: request.body.features } : {}),
+        ...("restrictions" in request.body ? { restrictions: request.body.restrictions } : {}),
+        ...("setupFee" in request.body
+          ? { setupFeeInCents: Math.round((request.body.setupFee || 0) * 100) }
+          : {}),
+        ...("monthlyFee" in request.body
+          ? { monthlyFeeInCents: Math.round((request.body.monthlyFee || 0) * 100) }
+          : {}),
+        ...("includedAgents" in request.body ? { includedAgents: request.body.includedAgents } : {}),
+        ...("includedSupervisors" in request.body
+          ? { includedSupervisors: request.body.includedSupervisors }
+          : {}),
+        ...("includedAdmins" in request.body ? { includedAdmins: request.body.includedAdmins } : {}),
+        ...("active" in request.body ? { active: request.body.active } : {}),
+        slug: slugify(`plan-${name}`),
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "PLAN_UPDATE",
+      entityType: "Plan",
+      entityId: item.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: request.body,
+    });
+
+    response.json({
+      item: {
+        ...item,
+        setupFee: item.setupFeeInCents / 100,
+        monthlyFee: item.monthlyFeeInCents / 100,
+      },
+    });
+  },
+);
+
+catalogRouter.delete(
+  "/plans/:id",
+  requireModuleAccess("CADASTROS", "manage"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    const existing = await prisma.plan.findUnique({
+      where: { id: request.params.id },
+      include: {
+        leads: { select: { id: true }, take: 1 },
+        tickets: { select: { id: true }, take: 1 },
+      },
+    });
+
+    if (!existing) {
+      throw new HttpError(404, "Registro não encontrado");
+    }
+
+    if (existing.leads.length || existing.tickets.length) {
+      throw new HttpError(409, "Este plano está vinculado a clientes e não pode ser removido");
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await moveEntityToTrash({
+        tx,
+        moduleKey: "CADASTROS",
+        entityType: "Plan",
+        entityId: existing.id,
+        label: existing.name,
+        payload: existing,
+        deletedById: request.auth.userId,
+      });
+
+      await tx.plan.delete({
+        where: { id: existing.id },
+      });
+    });
+
+    response.status(204).send();
+  },
+);

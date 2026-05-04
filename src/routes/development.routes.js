@@ -95,12 +95,67 @@ const listTicketsQuerySchema = paginationSchema.extend({
   to: z.string().datetime().optional(),
 });
 
+const clientAutofillQuerySchema = z
+  .object({
+    cnpj: z.string().trim().max(24).optional(),
+    instance: z.string().trim().max(120).optional(),
+  })
+  .refine((value) => Boolean(value.cnpj || value.instance), {
+    message: "Informe CNPJ ou instância",
+    path: ["cnpj"],
+  });
+
+const clientSearchQuerySchema = z.object({
+  q: z.string().trim().min(2).max(120),
+});
+
 function safeJsonParse(value, fallback) {
   try {
     return value ? JSON.parse(value) : fallback;
   } catch {
     return fallback;
   }
+}
+
+function normalizeDigits(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+function normalizeInstanceLookup(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim().toLowerCase();
+  if (!trimmed) return null;
+  return trimmed.endsWith(".atenderbem.com")
+    ? trimmed
+    : `${trimmed}.atenderbem.com`;
+}
+
+function buildClientAutofillPayload({
+  company,
+  cnpj,
+  phone,
+  instance,
+  contact,
+  email,
+  source,
+}) {
+  return {
+    source,
+    clientName: company || null,
+    cnpj: cnpj || null,
+    clientPhone: phone || null,
+    instance: instance || null,
+    contact: contact || null,
+    email: email || null,
+  };
+}
+
+function buildClientSuggestionPayload(payload) {
+  return {
+    ...payload,
+    label: payload.clientName || payload.instance || payload.cnpj || "Cliente",
+    subtitle: payload.instance || payload.cnpj || null,
+  };
 }
 
 function normalizeDisplayStatus(status) {
@@ -232,6 +287,207 @@ developmentRouter.get(
       users,
       sprints: sprints.map(serializeDevSprint),
     });
+  },
+);
+
+developmentRouter.get(
+  "/client-autofill",
+  requireModuleAccess("DESENVOLVIMENTO", "view"),
+  validate({ query: clientAutofillQuerySchema }),
+  async (request, response) => {
+    const normalizedCnpj = request.query.cnpj
+      ? normalizeDigits(request.query.cnpj)
+      : null;
+    const normalizedInstance = request.query.instance
+      ? normalizeInstanceLookup(request.query.instance)
+      : null;
+
+    if (normalizedInstance) {
+      const ticket = await prisma.ticket.findFirst({
+        where: {
+          instance: {
+            equals: normalizedInstance,
+            mode: "insensitive",
+          },
+        },
+        orderBy: { updatedAt: "desc" },
+        select: {
+          company: true,
+          cnpj: true,
+          phone: true,
+          contact: true,
+          email: true,
+          instance: true,
+        },
+      });
+
+      if (ticket) {
+        response.json({
+          item: buildClientAutofillPayload({
+            ...ticket,
+            source: "ticket",
+          }),
+        });
+        return;
+      }
+    }
+
+    if (normalizedCnpj && normalizedCnpj.length === 14) {
+      const [leadRows, ticketRows] = await prisma.$transaction([
+        prisma.$queryRaw`
+          SELECT "id"
+          FROM "Lead"
+          WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE("cnpj", ''), '.', ''), '/', ''), '-', ''), ' ', '') = ${normalizedCnpj}
+          ORDER BY "updatedAt" DESC
+          LIMIT 1
+        `,
+        prisma.$queryRaw`
+          SELECT "id"
+          FROM "Ticket"
+          WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE("cnpj", ''), '.', ''), '/', ''), '-', ''), ' ', '') = ${normalizedCnpj}
+          ORDER BY "updatedAt" DESC
+          LIMIT 1
+        `,
+      ]);
+
+      const leadId = leadRows?.[0]?.id;
+      if (leadId) {
+        const lead = await prisma.lead.findUnique({
+          where: { id: leadId },
+          select: {
+            company: true,
+            cnpj: true,
+            phone: true,
+            contact: true,
+            email: true,
+          },
+        });
+
+        if (lead) {
+          response.json({
+            item: buildClientAutofillPayload({
+              ...lead,
+              instance: null,
+              source: "lead",
+            }),
+          });
+          return;
+        }
+      }
+
+      const ticketId = ticketRows?.[0]?.id;
+      if (ticketId) {
+        const ticket = await prisma.ticket.findUnique({
+          where: { id: ticketId },
+          select: {
+            company: true,
+            cnpj: true,
+            phone: true,
+            contact: true,
+            email: true,
+            instance: true,
+          },
+        });
+
+        if (ticket) {
+          response.json({
+            item: buildClientAutofillPayload({
+              ...ticket,
+              source: "ticket",
+            }),
+          });
+          return;
+        }
+      }
+    }
+
+    response.json({ item: null });
+  },
+);
+
+developmentRouter.get(
+  "/client-autofill/suggestions",
+  requireModuleAccess("DESENVOLVIMENTO", "view"),
+  validate({ query: clientSearchQuerySchema }),
+  async (request, response) => {
+    const query = request.query.q.trim();
+
+    const [leadMatches, ticketMatches] = await prisma.$transaction([
+      prisma.lead.findMany({
+        where: {
+          company: {
+            contains: query,
+          },
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 5,
+        select: {
+          company: true,
+          cnpj: true,
+          phone: true,
+          contact: true,
+          email: true,
+        },
+      }),
+      prisma.ticket.findMany({
+        where: {
+          OR: [
+            {
+              company: {
+                contains: query,
+              },
+            },
+            {
+              instance: {
+                contains: query,
+              },
+            },
+          ],
+        },
+        orderBy: { updatedAt: "desc" },
+        take: 5,
+        select: {
+          company: true,
+          cnpj: true,
+          phone: true,
+          contact: true,
+          email: true,
+          instance: true,
+        },
+      }),
+    ]);
+
+    const items = [];
+    const seenKeys = new Set();
+
+    for (const lead of leadMatches) {
+      const payload = buildClientAutofillPayload({
+        ...lead,
+        instance: null,
+        source: "lead",
+      });
+      const key = `${payload.source}:${payload.clientName || ""}:${payload.cnpj || ""}`;
+      if (seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      items.push(buildClientSuggestionPayload(payload));
+      if (items.length >= 5) break;
+    }
+
+    if (items.length < 5) {
+      for (const ticket of ticketMatches) {
+        const payload = buildClientAutofillPayload({
+          ...ticket,
+          source: "ticket",
+        });
+        const key = `${payload.source}:${payload.clientName || ""}:${payload.instance || ""}:${payload.cnpj || ""}`;
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        items.push(buildClientSuggestionPayload(payload));
+        if (items.length >= 5) break;
+      }
+    }
+
+    response.json({ items });
   },
 );
 

@@ -172,6 +172,28 @@ model CatalogItem {
   @@index([type, active])
 }
 
+model Plan {
+  id                   String    @id @default(cuid())
+  name                 String
+  slug                 String    @unique
+  description          String?
+  features             String?
+  restrictions         String?
+  setupFeeInCents      Int       @default(0)
+  monthlyFeeInCents    Int       @default(0)
+  includedAgents       Int       @default(0)
+  includedSupervisors  Int       @default(0)
+  includedAdmins       Int       @default(0)
+  active               Boolean   @default(true)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  leads                Lead[]
+  tickets              Ticket[]
+
+  @@unique([name])
+  @@index([active, createdAt])
+}
+
 model Tag {
   id        String   @id @default(cuid())
   name      String   @unique
@@ -227,6 +249,7 @@ model Lead {
   valueInCents  Int               @default(0)
   paymentMethod String?
   isLite        Boolean           @default(false)
+  planId        String?
   wonAt         DateTime?
   lostAt        DateTime?
   notes         String?
@@ -241,6 +264,7 @@ model Lead {
   sdr           User?             @relation("LeadSdr", fields: [sdrId], references: [id], onDelete: SetNull)
   origin        Origin?           @relation(fields: [originId], references: [id], onDelete: SetNull)
   indicator     Indicator?        @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
+  plan          Plan?             @relation(fields: [planId], references: [id], onDelete: SetNull)
   createdBy     User              @relation("LeadCreator", fields: [createdById], references: [id], onDelete: Restrict)
   tasks         LeadTask[]
   comments      LeadComment[]
@@ -252,6 +276,7 @@ model Lead {
   @@index([sellerId, status])
   @@index([sdrId, status])
   @@index([originId, createdAt])
+  @@index([planId, status])
   @@index([createdById, createdAt])
   @@index([company])
   @@index([cnpj])
@@ -352,6 +377,7 @@ model Ticket {
   phone              String?
   instance           String?
   plan               String?
+  planId             String?
   paymentMethod      String?
   installment        String?
   type               String          @default("novo")
@@ -372,12 +398,14 @@ model Ticket {
   createdBy          User            @relation("TicketCreator", fields: [createdById], references: [id], onDelete: Restrict)
   assignee           User            @relation("TicketAssignee", fields: [assigneeId], references: [id], onDelete: Restrict)
   technicalAssignee  User?           @relation("TicketTechnicalAssignee", fields: [technicalAssigneeId], references: [id], onDelete: SetNull)
+  linkedPlan         Plan?           @relation(fields: [planId], references: [id], onDelete: SetNull)
   tasks              TicketTask[]
   comments           TicketComment[]
 
   @@index([status, createdAt])
   @@index([assigneeId, status])
   @@index([technicalAssigneeId, status])
+  @@index([planId, status])
   @@index([type, status])
   @@index([company])
 }
