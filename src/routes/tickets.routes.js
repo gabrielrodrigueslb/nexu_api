@@ -68,6 +68,7 @@ const createTicketSchema = z.object({
   contact: z.string().trim().max(120).optional().nullable(),
   email: z.string().email().optional().nullable(),
   phone: z.string().trim().max(40).optional().nullable(),
+  site: z.string().trim().max(255).optional().nullable(),
   instance: instanceDomainSchema.optional().nullable(),
   plan: z.string().trim().max(80).optional().nullable(),
   planId: cuidSchema.optional().nullable(),
@@ -941,6 +942,9 @@ ticketsRouter.patch(
   async (request, response) => {
     const existingTicket = await prisma.ticket.findUnique({
       where: { id: request.params.id },
+      include: {
+        lead: true,
+      },
     });
 
     if (!existingTicket) {
@@ -1199,60 +1203,75 @@ ticketsRouter.patch(
 
     const nextStatus = request.body.status || existingTicket.status;
 
-    const ticket = await prisma.ticket.update({
-      where: { id: request.params.id },
-      data: {
-        ...('code' in request.body ? { code: request.body.code } : {}),
-        ...('leadId' in request.body ? { leadId: request.body.leadId } : {}),
-        ...('company' in request.body ? { company: request.body.company } : {}),
-        ...('cnpj' in request.body ? { cnpj: request.body.cnpj } : {}),
-        ...('contact' in request.body ? { contact: request.body.contact } : {}),
-        ...('email' in request.body ? { email: request.body.email } : {}),
-        ...('phone' in request.body ? { phone: request.body.phone } : {}),
-        ...('instance' in request.body
-          ? { instance: request.body.instance }
-          : {}),
-        ...('plan' in request.body ? { plan: request.body.plan } : {}),
-        ...('paymentMethod' in request.body
-          ? { paymentMethod: request.body.paymentMethod }
-          : {}),
-        ...('installment' in request.body
-          ? { installment: request.body.installment }
-          : {}),
-        ...('type' in request.body ? { type: request.body.type } : {}),
-        ...('status' in request.body ? { status: request.body.status } : {}),
-        ...('csStatus' in request.body
-          ? { csStatus: request.body.csStatus }
-          : {}),
-        ...('notes' in request.body ? { notes: request.body.notes } : {}),
-        ...('cancelReason' in request.body
-          ? { cancelReason: request.body.cancelReason }
-          : {}),
-        ...('setupAmount' in request.body
-          ? { setupInCents: toCents(request.body.setupAmount) }
-          : {}),
-        ...('recurringAmount' in request.body
-          ? { recurringInCents: toCents(request.body.recurringAmount) }
-          : {}),
-        ...('assigneeId' in request.body
-          ? { assigneeId: request.body.assigneeId }
-          : {}),
-        ...('technicalAssigneeId' in request.body
-          ? { technicalAssigneeId: request.body.technicalAssigneeId }
-          : {}),
-        ...('completedAt' in request.body
-          ? {
-              completedAt: request.body.completedAt
-                ? new Date(request.body.completedAt)
-                : null,
-            }
-          : {}),
-        ...(nextStatus === 'cancelado' ? { canceledAt: new Date() } : {}),
-        ...(nextStatus === 'concluido' && !existingTicket.completedAt
-          ? { completedAt: new Date() }
-          : {}),
-      },
-      include: ticketInclude,
+    const ticket = await prisma.$transaction(async (tx) => {
+      if (existingTicket.leadId && existingTicket.lead && 'site' in request.body) {
+        const currentMetadata = parseLeadMetadata(existingTicket.lead.notes);
+        await tx.lead.update({
+          where: { id: existingTicket.leadId },
+          data: {
+            notes: buildLeadMetadataNotes({
+              ...currentMetadata,
+              site: request.body.site,
+            }),
+          },
+        });
+      }
+
+      return tx.ticket.update({
+        where: { id: request.params.id },
+        data: {
+          ...('code' in request.body ? { code: request.body.code } : {}),
+          ...('leadId' in request.body ? { leadId: request.body.leadId } : {}),
+          ...('company' in request.body ? { company: request.body.company } : {}),
+          ...('cnpj' in request.body ? { cnpj: request.body.cnpj } : {}),
+          ...('contact' in request.body ? { contact: request.body.contact } : {}),
+          ...('email' in request.body ? { email: request.body.email } : {}),
+          ...('phone' in request.body ? { phone: request.body.phone } : {}),
+          ...('instance' in request.body
+            ? { instance: request.body.instance }
+            : {}),
+          ...('plan' in request.body ? { plan: request.body.plan } : {}),
+          ...('paymentMethod' in request.body
+            ? { paymentMethod: request.body.paymentMethod }
+            : {}),
+          ...('installment' in request.body
+            ? { installment: request.body.installment }
+            : {}),
+          ...('type' in request.body ? { type: request.body.type } : {}),
+          ...('status' in request.body ? { status: request.body.status } : {}),
+          ...('csStatus' in request.body
+            ? { csStatus: request.body.csStatus }
+            : {}),
+          ...('notes' in request.body ? { notes: request.body.notes } : {}),
+          ...('cancelReason' in request.body
+            ? { cancelReason: request.body.cancelReason }
+            : {}),
+          ...('setupAmount' in request.body
+            ? { setupInCents: toCents(request.body.setupAmount) }
+            : {}),
+          ...('recurringAmount' in request.body
+            ? { recurringInCents: toCents(request.body.recurringAmount) }
+            : {}),
+          ...('assigneeId' in request.body
+            ? { assigneeId: request.body.assigneeId }
+            : {}),
+          ...('technicalAssigneeId' in request.body
+            ? { technicalAssigneeId: request.body.technicalAssigneeId }
+            : {}),
+          ...('completedAt' in request.body
+            ? {
+                completedAt: request.body.completedAt
+                  ? new Date(request.body.completedAt)
+                  : null,
+              }
+            : {}),
+          ...(nextStatus === 'cancelado' ? { canceledAt: new Date() } : {}),
+          ...(nextStatus === 'concluido' && !existingTicket.completedAt
+            ? { completedAt: new Date() }
+            : {}),
+        },
+        include: ticketInclude,
+      });
     });
 
     await writeAuditLog({

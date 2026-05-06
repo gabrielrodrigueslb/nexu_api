@@ -4,6 +4,12 @@ import { z } from "zod";
 import { compareAccessLevel, resolveUserAccess } from "../lib/access-control.js";
 import { writeAuditLog } from "../lib/audit.js";
 import { CATALOG_TYPES, DOC_TYPES } from "../lib/constants.js";
+import {
+  buildCrmFunnelSlug,
+  buildDefaultStagesForNewFunnel,
+  listCrmFunnels,
+  serializeCrmFunnel,
+} from "../lib/crm-funnels.js";
 import { HttpError } from "../lib/http-error.js";
 import { prisma } from "../lib/prisma.js";
 import { cuidSchema } from "../lib/schemas.js";
@@ -61,6 +67,19 @@ const indicatorSchema = z.object({
   active: z.boolean().optional(),
 });
 
+const crmFunnelStageSchema = z.object({
+  id: cuidSchema.optional(),
+  name: z.string().trim().min(2).max(120),
+  sortOrder: z.coerce.number().int().min(0).optional(),
+  active: z.boolean().optional(),
+});
+
+const crmFunnelSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  active: z.boolean().optional(),
+  stages: z.array(crmFunnelStageSchema).min(1).optional(),
+});
+
 catalogRouter.use(authenticate);
 
 async function ensureAnyModuleAccess(request, moduleKeys, requiredLevel = "view") {
@@ -110,6 +129,7 @@ catalogRouter.get("/lookups", async (request, response) => {
       orderBy: [{ name: "asc" }],
     }),
   ]);
+  const funnels = await listCrmFunnels(prisma, true);
 
   response.json({
     origins,
@@ -126,8 +146,158 @@ catalogRouter.get("/lookups", async (request, response) => {
       setupFee: plan.setupFeeInCents / 100,
       monthlyFee: plan.monthlyFeeInCents / 100,
     })),
+    funnels: funnels.map(serializeCrmFunnel),
   });
 });
+
+catalogRouter.get(
+  "/crm-funnels",
+  requireModuleAccess("CADASTROS", "view"),
+  async (_request, response) => {
+    const items = await listCrmFunnels(prisma, false);
+    response.json({ items: items.map(serializeCrmFunnel) });
+  },
+);
+
+catalogRouter.post(
+  "/crm-funnels",
+  requireModuleAccess("CADASTROS", "edit"),
+  validate({ body: crmFunnelSchema }),
+  async (request, response) => {
+    const existingCount = await prisma.crmFunnel.count();
+    const requestedStages = request.body.stages?.length
+      ? request.body.stages
+      : buildDefaultStagesForNewFunnel();
+
+    const item = await prisma.crmFunnel.create({
+      data: {
+        name: request.body.name,
+        slug: buildCrmFunnelSlug(request.body.name, Date.now().toString().slice(-4)),
+        active: request.body.active ?? true,
+        isDefault: existingCount === 0,
+        sortOrder: existingCount,
+        stages: {
+          create: requestedStages.map((stage, index) => ({
+            name: stage.name,
+            sortOrder: stage.sortOrder ?? index,
+            active: stage.active ?? true,
+          })),
+        },
+      },
+      include: {
+        stages: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        },
+      },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "CRM_FUNNEL_CREATE",
+      entityType: "CrmFunnel",
+      entityId: item.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.status(201).json({ item: serializeCrmFunnel(item) });
+  },
+);
+
+catalogRouter.patch(
+  "/crm-funnels/:id",
+  requireModuleAccess("CADASTROS", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: crmFunnelSchema.partial(),
+  }),
+  async (request, response) => {
+    const existing = await prisma.crmFunnel.findUnique({
+      where: { id: request.params.id },
+      include: {
+        stages: {
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        },
+      },
+    });
+
+    if (!existing) {
+      throw new HttpError(404, "Funil do CRM não encontrado");
+    }
+
+    const item = await prisma.$transaction(async (tx) => {
+      await tx.crmFunnel.update({
+        where: { id: request.params.id },
+        data: {
+          ...(request.body.name ? { name: request.body.name, slug: buildCrmFunnelSlug(request.body.name, existing.id.slice(-4)) } : {}),
+          ...("active" in request.body ? { active: request.body.active } : {}),
+        },
+      });
+
+      if (Array.isArray(request.body.stages)) {
+        const stageNames = new Set();
+        for (const stage of request.body.stages) {
+          const normalized = stage.name.trim().toLowerCase();
+          if (stageNames.has(normalized)) {
+            throw new HttpError(409, "Existem colunas duplicadas neste funil");
+          }
+          stageNames.add(normalized);
+        }
+
+        for (const [index, stageInput] of request.body.stages.entries()) {
+          if (stageInput.id) {
+            const previous = existing.stages.find((item) => item.id === stageInput.id);
+            const updatedStage = await tx.crmFunnelStage.update({
+              where: { id: stageInput.id },
+              data: {
+                name: stageInput.name,
+                sortOrder: stageInput.sortOrder ?? index,
+                active: stageInput.active ?? true,
+              },
+            });
+
+            if (previous && previous.name !== updatedStage.name) {
+              await tx.lead.updateMany({
+                where: { stageId: updatedStage.id },
+                data: { status: updatedStage.name },
+              });
+            }
+          } else {
+            await tx.crmFunnelStage.create({
+              data: {
+                funnelId: existing.id,
+                name: stageInput.name,
+                sortOrder: stageInput.sortOrder ?? index,
+                active: stageInput.active ?? true,
+              },
+            });
+          }
+        }
+      }
+
+      return tx.crmFunnel.findUnique({
+        where: { id: existing.id },
+        include: {
+          stages: {
+            orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          },
+        },
+      });
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "CRM_FUNNEL_UPDATE",
+      entityType: "CrmFunnel",
+      entityId: request.params.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: request.body,
+    });
+
+    response.json({ item: serializeCrmFunnel(item) });
+  },
+);
 
 catalogRouter.get("/items", requireModuleAccess("CADASTROS", "view"), async (request, response) => {
   const filters = z

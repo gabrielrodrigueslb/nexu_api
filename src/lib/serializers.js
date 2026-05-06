@@ -32,6 +32,23 @@ function serializeLeadReference(lead) {
     phone: lead.phone,
     site: metadata.site || null,
     status: lead.status,
+    funnelId: lead.funnelId || null,
+    stageId: lead.stageId || null,
+    funnel: lead.funnel
+      ? {
+          id: lead.funnel.id,
+          name: lead.funnel.name,
+          slug: lead.funnel.slug,
+          isDefault: lead.funnel.isDefault,
+        }
+      : null,
+    stage: lead.stage
+      ? {
+          id: lead.stage.id,
+          name: lead.stage.name,
+          sortOrder: lead.stage.sortOrder,
+        }
+      : null,
     value: fromCents(lead.valueInCents),
     paymentMethod: lead.paymentMethod,
     isLite: lead.isLite,
@@ -125,6 +142,8 @@ export function serializeLead(lead) {
     ...rest,
     value: fromCents(valueInCents),
     notes,
+    funnelId: rest.funnelId || null,
+    stageId: rest.stageId || null,
     installment: metadata.installment || null,
     site: metadata.site || null,
     consultant: metadata.consultant || null,
@@ -142,6 +161,21 @@ export function serializeLead(lead) {
     sdr,
     origin,
     indicator,
+    funnel: rest.funnel
+      ? {
+          id: rest.funnel.id,
+          name: rest.funnel.name,
+          slug: rest.funnel.slug,
+          isDefault: rest.funnel.isDefault,
+        }
+      : null,
+    stage: rest.stage
+      ? {
+          id: rest.stage.id,
+          name: rest.stage.name,
+          sortOrder: rest.stage.sortOrder,
+        }
+      : null,
     plan: plan
       ? {
           id: plan.id,

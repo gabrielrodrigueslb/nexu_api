@@ -238,6 +238,38 @@ model Indicator {
   @@index([name])
 }
 
+model CrmFunnel {
+  id         String           @id @default(cuid())
+  name       String
+  slug       String           @unique
+  active     Boolean          @default(true)
+  isDefault  Boolean          @default(false)
+  sortOrder  Int              @default(0)
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+  stages     CrmFunnelStage[]
+  leads      Lead[]
+
+  @@index([active, sortOrder])
+  @@index([isDefault, active])
+  @@index([name])
+}
+
+model CrmFunnelStage {
+  id         String      @id @default(cuid())
+  funnelId    String
+  name       String
+  sortOrder  Int         @default(0)
+  active     Boolean     @default(true)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  funnel     CrmFunnel   @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+  leads      Lead[]
+
+  @@unique([funnelId, name])
+  @@index([funnelId, active, sortOrder])
+}
+
 model Lead {
   id            String            @id @default(cuid())
   company       String
@@ -246,6 +278,8 @@ model Lead {
   email         String?
   phone         String?
   status        String
+  funnelId      String?
+  stageId       String?
   valueInCents  Int               @default(0)
   paymentMethod String?
   isLite        Boolean           @default(false)
@@ -265,6 +299,8 @@ model Lead {
   origin        Origin?           @relation(fields: [originId], references: [id], onDelete: SetNull)
   indicator     Indicator?        @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
   plan          Plan?             @relation(fields: [planId], references: [id], onDelete: SetNull)
+  funnel        CrmFunnel?        @relation(fields: [funnelId], references: [id], onDelete: SetNull)
+  stage         CrmFunnelStage?   @relation(fields: [stageId], references: [id], onDelete: SetNull)
   createdBy     User              @relation("LeadCreator", fields: [createdById], references: [id], onDelete: Restrict)
   tasks         LeadTask[]
   comments      LeadComment[]
@@ -277,6 +313,8 @@ model Lead {
   @@index([sdrId, status])
   @@index([originId, createdAt])
   @@index([planId, status])
+  @@index([funnelId, status])
+  @@index([stageId])
   @@index([createdById, createdAt])
   @@index([company])
   @@index([cnpj])

@@ -2,7 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 
 import { writeAuditLog } from "../lib/audit.js";
-import { LEAD_STATUSES, LEAD_TASK_TYPES } from "../lib/constants.js";
+import { resolveLeadWorkflow } from "../lib/crm-funnels.js";
+import { LEAD_TASK_TYPES } from "../lib/constants.js";
 import { HttpError } from "../lib/http-error.js";
 import { buildLeadMetadataNotes, parseLeadMetadata } from "../lib/lead-metadata.js";
 import { toCents } from "../lib/money.js";
@@ -17,7 +18,7 @@ import { validate } from "../middlewares/validate.js";
 
 export const leadsRouter = Router();
 
-const leadStatusSchema = z.enum(LEAD_STATUSES);
+const leadStatusSchema = z.string().trim().min(2).max(120);
 const taskTypeSchema = z.enum(LEAD_TASK_TYPES);
 
 const leadTaskInputSchema = z.object({
@@ -46,6 +47,8 @@ const createLeadSchema = z.object({
   email: z.string().email().optional().nullable(),
   phone: z.string().trim().max(40).optional().nullable(),
   status: leadStatusSchema,
+  funnelId: cuidSchema.optional().nullable(),
+  stageId: cuidSchema.optional().nullable(),
   value: z.coerce.number().min(0),
   paymentMethod: z.string().trim().max(40).optional().nullable(),
   installment: z.string().trim().max(40).optional().nullable(),
@@ -77,6 +80,7 @@ const updateLeadSchema = createLeadSchema.partial();
 const listLeadsQuerySchema = paginationSchema.extend({
   q: z.string().trim().optional(),
   status: leadStatusSchema.optional(),
+  funnelId: cuidSchema.optional(),
   sellerId: cuidSchema.optional(),
   sdrId: cuidSchema.optional(),
   originId: cuidSchema.optional(),
@@ -98,6 +102,8 @@ const leadInclude = {
   origin: true,
   indicator: true,
   plan: true,
+  funnel: true,
+  stage: true,
   tasks: {
     orderBy: {
       createdAt: "asc",
@@ -320,6 +326,7 @@ leadsRouter.get(
           }
         : {}),
       ...(request.query.status ? { status: request.query.status } : {}),
+      ...(request.query.funnelId ? { funnelId: request.query.funnelId } : {}),
       ...(request.query.sellerId ? { sellerId: request.query.sellerId } : {}),
       ...(request.query.sdrId ? { sdrId: request.query.sdrId } : {}),
       ...(request.query.originId ? { originId: request.query.originId } : {}),
@@ -502,6 +509,7 @@ leadsRouter.post(
   validate({ body: createLeadSchema }),
   async (request, response) => {
     const lead = await prisma.$transaction(async (tx) => {
+      const workflow = await resolveLeadWorkflow(tx, request.body);
       const createdLead = await tx.lead.create({
         data: {
           company: request.body.company,
@@ -509,7 +517,9 @@ leadsRouter.post(
           contact: request.body.contact,
           email: request.body.email,
           phone: request.body.phone,
-          status: request.body.status,
+          status: workflow.status,
+          funnelId: workflow.funnelId,
+          stageId: workflow.stageId,
           valueInCents: toCents(request.body.value),
           paymentMethod: request.body.paymentMethod,
           isLite: request.body.isLite ?? false,
@@ -520,11 +530,11 @@ leadsRouter.post(
           originId: request.body.originId,
           indicatorId: request.body.indicatorId,
           wonAt:
-            request.body.wonAt || request.body.status === "Ganho"
+            request.body.wonAt || workflow.status === "Ganho"
               ? new Date(request.body.wonAt || new Date().toISOString())
               : null,
           lostAt:
-            request.body.lostAt || request.body.status === "Perdido"
+            request.body.lostAt || workflow.status === "Perdido"
               ? new Date(request.body.lostAt || new Date().toISOString())
               : null,
           createdById: request.auth.userId,
@@ -556,7 +566,7 @@ leadsRouter.post(
         },
       });
 
-      if (createdLead.status === "Ganho") {
+      if (workflow.status === "Ganho") {
         await createOrSyncLeadTicket(tx, createdLead, request.auth.userId, request.body.catalogItems);
       }
 
@@ -620,6 +630,20 @@ leadsRouter.patch(
     };
     const nextStatus = request.body.status || existingLead.status;
     const lead = await prisma.$transaction(async (tx) => {
+      const workflow =
+        "status" in request.body || "funnelId" in request.body || "stageId" in request.body
+          ? await resolveLeadWorkflow(tx, {
+              status: request.body.status || existingLead.status,
+              funnelId:
+                "funnelId" in request.body ? request.body.funnelId : existingLead.funnelId,
+              stageId: "stageId" in request.body ? request.body.stageId : existingLead.stageId,
+            })
+          : {
+              status: existingLead.status,
+              funnelId: existingLead.funnelId,
+              stageId: existingLead.stageId,
+            };
+      const nextStatus = workflow.status;
       const updatedLead = await tx.lead.update({
         where: { id: request.params.id },
         data: {
@@ -628,7 +652,7 @@ leadsRouter.patch(
           ...("contact" in request.body ? { contact: request.body.contact } : {}),
           ...("email" in request.body ? { email: request.body.email } : {}),
           ...("phone" in request.body ? { phone: request.body.phone } : {}),
-          ...("status" in request.body ? { status: request.body.status } : {}),
+          ...(workflow ? { status: workflow.status, funnelId: workflow.funnelId, stageId: workflow.stageId } : {}),
           ...("value" in request.body ? { valueInCents: toCents(request.body.value) } : {}),
           ...("paymentMethod" in request.body
             ? { paymentMethod: request.body.paymentMethod }
@@ -694,7 +718,7 @@ leadsRouter.patch(
         }
       }
 
-      if (nextStatus === "Ganho") {
+      if (workflow.status === "Ganho") {
         await createOrSyncLeadTicket(
           tx,
           { ...updatedLead, ticket: existingLead.ticket, notes: buildLeadMetadataNotes(nextMetadata) },
