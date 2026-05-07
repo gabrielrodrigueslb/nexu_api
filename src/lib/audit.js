@@ -9,15 +9,28 @@ export async function writeAuditLog({
   userAgent,
   metadata,
 }) {
+  const normalizedEntityId =
+    entityId === null || entityId === undefined || entityId === ""
+      ? "system"
+      : String(entityId);
+
   return prisma.auditLog.create({
     data: {
-      actorUserId,
       action,
       entityType,
-      entityId,
+      entityId: normalizedEntityId,
       ipAddress,
       userAgent,
       metadata: metadata ? JSON.stringify(metadata) : null,
+      ...(actorUserId
+        ? {
+            actor: {
+              connect: {
+                id: actorUserId,
+              },
+            },
+          }
+        : {}),
     },
   });
 }
