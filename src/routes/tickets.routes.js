@@ -216,8 +216,8 @@ function buildClosedClientsWhereSql(query) {
     const normalizedCnpjSql = Prisma.sql`REPLACE(REPLACE(REPLACE(REPLACE(COALESCE("cnpj", ''), '.', ''), '/', ''), '-', ''), ' ', '')`;
     clauses.push(
       normalizedDigits
-        ? Prisma.sql`("code" LIKE ${likeValue} OR "company" LIKE ${likeValue} OR "cnpj" LIKE ${likeValue} OR ${normalizedCnpjSql} LIKE ${`%${normalizedDigits}%`})`
-        : Prisma.sql`("code" LIKE ${likeValue} OR "company" LIKE ${likeValue} OR "cnpj" LIKE ${likeValue})`,
+        ? Prisma.sql`("code" ILIKE ${likeValue} OR "company" ILIKE ${likeValue} OR "cnpj" ILIKE ${likeValue} OR ${normalizedCnpjSql} LIKE ${`%${normalizedDigits}%`})`
+        : Prisma.sql`("code" ILIKE ${likeValue} OR "company" ILIKE ${likeValue} OR "cnpj" ILIKE ${likeValue})`,
     );
   }
 
@@ -391,7 +391,7 @@ ticketsRouter.get(
         ${whereSql}
         ORDER BY
           CASE WHEN "status" = 'concluido' THEN 0 ELSE 1 END ASC,
-          "company" COLLATE NOCASE ASC,
+          LOWER("company") ASC,
           "createdAt" DESC
         LIMIT ${limit}
         OFFSET ${skip}
