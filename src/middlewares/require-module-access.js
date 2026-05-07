@@ -12,6 +12,10 @@ export function requireModuleAccess(moduleKey, requiredAccessLevel = "view") {
         return next();
       }
 
+      if (moduleKey === "CLIENTES" && requiredAccessLevel === "view") {
+        return next();
+      }
+
       if (!request.auth.access) {
         request.auth.access = await resolveUserAccess(request.auth.userId);
       }
