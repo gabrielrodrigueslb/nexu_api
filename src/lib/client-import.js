@@ -1,10 +1,6 @@
-import { execFile } from "node:child_process";
-import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+import * as XLSX from "xlsx";
 
 function normalizeTicketStatus(value) {
   const normalized = String(value || "")
@@ -51,6 +47,26 @@ function normalizeInstanceDomain(value) {
   return trimmed.endsWith(".atenderbem.com") ? trimmed : `${trimmed}.atenderbem.com`;
 }
 
+function normalizeHeader(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function getWorkbookCell(row, headerMap, ...aliases) {
+  for (const alias of aliases) {
+    const key = normalizeHeader(alias);
+    const index = headerMap.get(key);
+    if (index === undefined) continue;
+    return row[index];
+  }
+
+  return null;
+}
+
 function normalizeCsvRecord(record) {
   return {
     code: record.Protocolo,
@@ -64,8 +80,8 @@ function normalizeCsvRecord(record) {
   };
 }
 
-async function parseCsvFile(filePath) {
-  const contents = await fs.readFile(filePath, "utf8");
+function parseCsvBuffer(fileBuffer) {
+  const contents = fileBuffer.toString("utf8");
   const lines = contents
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -84,113 +100,64 @@ async function parseCsvFile(filePath) {
   });
 }
 
-async function parseWorkbookFile(filePath) {
-  const script = `
-import json, re, sys, unicodedata
-import openpyxl
-
-path = sys.argv[1]
-wb = openpyxl.load_workbook(path, data_only=True)
-ws = wb[wb.sheetnames[0]]
-rows = list(ws.iter_rows(values_only=True))
-records = []
-
-def normalize_header(value):
-    raw = unicodedata.normalize('NFKD', str(value or ''))
-    raw = raw.encode('ascii', 'ignore').decode('ascii')
-    return re.sub(r'[^a-z0-9]+', ' ', raw.lower()).strip()
-
-def map_status(value):
-    raw = str(value or '').strip()
-    if raw == 'Ativa':
-        return 'concluido'
-    if raw in ('Cancelada', 'Em cancelamento'):
-        return 'cancelado'
-    if raw == 'Trial':
-        return 'em_implantacao'
-    raise ValueError(f'Status não mapeado: {raw}')
-
-def normalize_instance(value):
-    raw = str(value or '').strip().lower()
-    raw = re.sub(r'^https?://', '', raw)
-    raw = raw.lstrip('@').rstrip('/')
-    if not raw:
-        return None
-    if raw.endswith('.atenderbem.com'):
-        return raw
-    return f'{raw}.atenderbem.com'
-
-def get_value(row, header_map, *aliases):
-    for alias in aliases:
-        idx = header_map.get(alias)
-        if idx is None:
-            continue
-        if idx < len(row):
-            return row[idx]
-    return None
-
-if not rows:
-    print('[]')
-    raise SystemExit(0)
-
-header_map = {
-    normalize_header(value): index
-    for index, value in enumerate(rows[0])
-}
-
-for row in rows[1:]:
-    instance_name = get_value(row, header_map, 'instancia')
-    instance = normalize_instance(instance_name)
-    identifier = get_value(row, header_map, 'id', 'codigo', 'protocolo')
-    status_value = get_value(row, header_map, 'assinatura', 'status')
-    company = str(instance_name or '').strip().lower()
-
-    if not instance or not identifier or not status_value or not company:
-        continue
-
-    document = str(get_value(row, header_map, 'documento', 'cnpj', 'cpf cnpj') or '').strip()
-    plan = str(get_value(row, header_map, 'plano') or '').strip() or None
-    monthly_cost = float(get_value(row, header_map, 'custo mensal medio', 'total') or 0)
-
-    records.append({
-        'code': f"INS-{int(identifier)}",
-        'company': company,
-        'cnpj': document or None,
-        'instance': instance,
-        'plan': plan,
-        'status': map_status(status_value),
-        'monthlyCost': monthly_cost,
-        'assigneeName': None,
-    })
-
-print(json.dumps(records, ensure_ascii=False))
-`;
-
-  const { stdout } = await execFileAsync("python", ["-c", script, filePath], {
-    maxBuffer: 50 * 1024 * 1024,
+function parseWorkbookBuffer(fileBuffer) {
+  const workbook = XLSX.read(fileBuffer, {
+    type: "buffer",
+    cellDates: true,
+  });
+  const firstSheetName = workbook.SheetNames[0];
+  const worksheet = workbook.Sheets[firstSheetName];
+  const rows = XLSX.utils.sheet_to_json(worksheet, {
+    header: 1,
+    raw: false,
+    defval: null,
   });
 
-  return JSON.parse(stdout);
+  if (!rows.length) {
+    return [];
+  }
+
+  const headerMap = new Map(rows[0].map((value, index) => [normalizeHeader(value), index]));
+  const records = [];
+
+  for (const row of rows.slice(1)) {
+    const instanceName = getWorkbookCell(row, headerMap, "Instância");
+    const identifier = getWorkbookCell(row, headerMap, "ID", "Código", "Protocolo");
+    const statusValue = getWorkbookCell(row, headerMap, "Assinatura", "Status");
+    const company = String(instanceName || "")
+      .trim()
+      .toLowerCase();
+    const instance = normalizeInstanceDomain(instanceName);
+
+    if (!instance || !identifier || !statusValue || !company) {
+      continue;
+    }
+
+    records.push({
+      code: `INS-${Number(identifier)}`,
+      company,
+      cnpj: String(getWorkbookCell(row, headerMap, "Documento", "CNPJ", "CPF/CNPJ") || "").trim() || null,
+      instance,
+      plan: String(getWorkbookCell(row, headerMap, "Plano") || "").trim() || null,
+      status: normalizeTicketStatus(statusValue),
+      monthlyCost: toNumber(getWorkbookCell(row, headerMap, "Custo Mensal Médio", "Total")),
+      assigneeName: null,
+    });
+  }
+
+  return records;
 }
 
 export async function parseImportedClientsFile({ fileName, fileBuffer }) {
   const extension = path.extname(fileName || "").toLowerCase();
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "nexu-client-import-"));
-  const tempPath = path.join(tempDir, `upload${extension || ".bin"}`);
 
-  try {
-    await fs.writeFile(tempPath, fileBuffer);
-
-    if (extension === ".csv") {
-      return parseCsvFile(tempPath);
-    }
-
-    if (extension === ".xlsx" || extension === ".xlsm") {
-      return parseWorkbookFile(tempPath);
-    }
-
-    throw new Error("Formato não suportado. Envie um arquivo .csv ou .xlsx.");
-  } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
+  if (extension === ".csv") {
+    return parseCsvBuffer(fileBuffer);
   }
+
+  if (extension === ".xlsx" || extension === ".xlsm") {
+    return parseWorkbookBuffer(fileBuffer);
+  }
+
+  throw new Error("Formato não suportado. Envie um arquivo .csv ou .xlsx.");
 }
