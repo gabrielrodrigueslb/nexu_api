@@ -152,6 +152,10 @@ async function ensureUserActionsExist(actionPermissions = []) {
     return;
   }
 
+  if (typeof prisma.accessAction?.findMany !== "function") {
+    return;
+  }
+
   const actions = await prisma.accessAction.findMany({
     where: {
       OR: actionPermissions.map((permission) => ({

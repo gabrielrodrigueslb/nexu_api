@@ -33,6 +33,7 @@ model User {
   createdTickets      Ticket[]       @relation("TicketCreator")
   assignedTickets     Ticket[]       @relation("TicketAssignee")
   technicalTickets    Ticket[]       @relation("TicketTechnicalAssignee")
+  uploadedTicketAttachments TicketAttachment[] @relation("TicketAttachmentUploader")
   leadComments        LeadComment[]
   ticketComments      TicketComment[]
   ticketTasks         TicketTask[]
@@ -514,6 +515,7 @@ model Ticket {
   linkedPlan         Plan?           @relation(fields: [planId], references: [id], onDelete: SetNull)
   tasks              TicketTask[]
   comments           TicketComment[]
+  attachments        TicketAttachment[]
 
   @@index([status, createdAt])
   @@index([assigneeId, status])
@@ -550,6 +552,23 @@ model TicketComment {
 
   @@index([ticketId, createdAt])
   @@index([authorUserId, createdAt])
+}
+
+model TicketAttachment {
+  id           String   @id @default(cuid())
+  ticketId     String
+  uploadedById String
+  fileName     String
+  mimeType     String
+  sizeInBytes  Int
+  contentBase64 String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  ticket       Ticket   @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  uploadedBy   User     @relation("TicketAttachmentUploader", fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([ticketId, createdAt])
+  @@index([uploadedById, createdAt])
 }
 
 model DevSprint {

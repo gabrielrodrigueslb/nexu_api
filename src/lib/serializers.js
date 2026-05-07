@@ -216,6 +216,7 @@ export function serializeTicket(ticket) {
     lead,
     tasks,
     comments,
+    attachments,
     ...rest
   } = ticket;
 
@@ -252,6 +253,14 @@ export function serializeTicket(ticket) {
       ...comment,
       author: serializeUser(comment.author),
     })),
+    attachments: attachments?.map((attachment) => ({
+      id: attachment.id,
+      fileName: attachment.fileName,
+      mimeType: attachment.mimeType,
+      sizeInBytes: attachment.sizeInBytes,
+      createdAt: attachment.createdAt,
+      uploadedBy: serializeUser(attachment.uploadedBy),
+    })) || [],
   };
 }
 

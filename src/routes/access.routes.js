@@ -44,7 +44,6 @@ const sectorSchema = z.object({
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().max(240).optional().nullable(),
   active: z.boolean().optional(),
-  sortOrder: z.coerce.number().int().min(0).max(1000).optional(),
 });
 
 const moduleSchema = z.object({
@@ -90,6 +89,10 @@ function normalizeSectorKey(value) {
     .replace(/^_+|_+$/g, "");
 }
 
+function hasAccessActionModel() {
+  return typeof prisma.accessAction?.findMany === "function";
+}
+
 async function ensureModulesExist(moduleKeys) {
   const normalizedKeys = [...new Set(moduleKeys.map(normalizeModuleKey))];
   if (!normalizedKeys.length) return;
@@ -109,6 +112,7 @@ async function ensureModulesExist(moduleKeys) {
 
 async function ensureActionsExist(actionPermissions = []) {
   if (!actionPermissions.length) return;
+  if (!hasAccessActionModel()) return;
 
   const compositeKeys = actionPermissions.map((permission) => ({
     moduleKey: normalizeModuleKey(permission.moduleKey),
@@ -160,7 +164,7 @@ accessRouter.use(authenticate, authorize(["admin"]));
 
 accessRouter.get("/sectors", async (_request, response) => {
   const items = await prisma.sector.findMany({
-    orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    orderBy: [{ name: "asc" }],
   });
 
   response.json({
@@ -181,7 +185,7 @@ accessRouter.post("/sectors", validate({ body: sectorSchema }), async (request, 
       name: request.body.name,
       description: request.body.description,
       active: request.body.active ?? true,
-      sortOrder: request.body.sortOrder ?? 999,
+      sortOrder: 0,
     },
   });
 
@@ -216,7 +220,6 @@ accessRouter.patch(
         ...("name" in request.body ? { name: request.body.name } : {}),
         ...("description" in request.body ? { description: request.body.description } : {}),
         ...("active" in request.body ? { active: request.body.active } : {}),
-        ...("sortOrder" in request.body ? { sortOrder: request.body.sortOrder } : {}),
       },
     });
 
@@ -348,10 +351,12 @@ accessRouter.patch(
 );
 
 accessRouter.get("/actions", async (_request, response) => {
-  const items = await prisma.accessAction.findMany({
-    where: { active: true },
-    orderBy: [{ moduleKey: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
-  });
+  const items = hasAccessActionModel()
+    ? await prisma.accessAction.findMany({
+        where: { active: true },
+        orderBy: [{ moduleKey: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
+      })
+    : [];
 
   response.json({
     items,
@@ -360,6 +365,10 @@ accessRouter.get("/actions", async (_request, response) => {
 });
 
 accessRouter.post("/actions", validate({ body: actionSchema }), async (request, response) => {
+  if (!hasAccessActionModel()) {
+    throw new HttpError(503, "Modelo de ações de acesso indisponível no runtime atual.");
+  }
+
   const moduleKey = normalizeModuleKey(request.body.moduleKey);
   await ensureModulesExist([moduleKey]);
 
@@ -399,6 +408,10 @@ accessRouter.patch(
     body: actionSchema.partial(),
   }),
   async (request, response) => {
+    if (!hasAccessActionModel()) {
+      throw new HttpError(503, "Modelo de ações de acesso indisponível no runtime atual.");
+    }
+
     const current = await prisma.accessAction.findUnique({ where: { id: request.params.id } });
     if (!current) {
       throw new HttpError(404, "Acao nao encontrada");

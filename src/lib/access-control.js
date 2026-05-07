@@ -56,6 +56,21 @@ function getDefaultActionAllowed(accessLevel, actionKey) {
   return false;
 }
 
+function canReadAccessActions() {
+  return typeof prisma.accessAction?.findMany === "function";
+}
+
+async function listActiveAccessActions() {
+  if (!canReadAccessActions()) {
+    return [];
+  }
+
+  return prisma.accessAction.findMany({
+    where: { active: true },
+    orderBy: [{ moduleKey: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
+  });
+}
+
 export async function resolveUserAccess(userId) {
   const [user, modules, actions] = await Promise.all([
     prisma.user.findUnique({
@@ -75,10 +90,7 @@ export async function resolveUserAccess(userId) {
       where: { active: true },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
-    prisma.accessAction.findMany({
-      where: { active: true },
-      orderBy: [{ moduleKey: "asc" }, { sortOrder: "asc" }, { label: "asc" }],
-    }),
+    listActiveAccessActions(),
   ]);
 
   if (!user) {

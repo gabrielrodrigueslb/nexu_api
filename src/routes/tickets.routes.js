@@ -41,6 +41,17 @@ const ticketCommentSchema = z.object({
   message: z.string().trim().min(1).max(2000),
 });
 
+const ticketAttachmentInputSchema = z.object({
+  fileName: z.string().trim().min(1).max(255),
+  mimeType: z.string().trim().min(1).max(120),
+  sizeInBytes: z.coerce.number().int().min(1).max(25 * 1024 * 1024),
+  contentBase64: z.string().trim().min(10).max(25 * 1024 * 1024),
+});
+
+const ticketAttachmentBatchSchema = z.object({
+  files: z.array(ticketAttachmentInputSchema).min(1).max(10),
+});
+
 const importClientsSchema = z.object({
   fileName: z.string().trim().min(3).max(255),
   contentBase64: z.string().trim().min(10),
@@ -181,6 +192,14 @@ const ticketInclude = {
   comments: {
     include: {
       author: true,
+    },
+    orderBy: {
+      createdAt: 'desc',
+    },
+  },
+  attachments: {
+    include: {
+      uploadedBy: true,
     },
     orderBy: {
       createdAt: 'desc',
@@ -796,25 +815,25 @@ ticketsRouter.patch(
         : totals
           ? toCents(totals.recurringAmount)
           : null;
-      if (existingTicket.leadId && existingTicket.lead) {
-        const currentMetadata = parseLeadMetadata(existingTicket.lead.notes);
-          const nextMetadata = {
-            ...currentMetadata,
-            ...('installment' in request.body
-              ? { installment: request.body.installment }
-              : {}),
-            ...('site' in request.body ? { site: request.body.site } : {}),
-            ...('notes' in request.body
-              ? { observations: request.body.notes }
-              : {}),
-          ...('observations' in request.body
-            ? { observations: request.body.observations }
-            : {}),
-          ...('consultant' in request.body
-            ? { consultant: request.body.consultant }
-            : {}),
-        };
+      let resolvedLeadId = existingTicket.leadId || null;
+      const nextMetadata = {
+        ...(existingTicket.lead ? parseLeadMetadata(existingTicket.lead.notes) : {}),
+        ...('installment' in request.body
+          ? { installment: request.body.installment }
+          : {}),
+        ...('site' in request.body ? { site: request.body.site } : {}),
+        ...('notes' in request.body
+          ? { observations: request.body.notes }
+          : {}),
+        ...('observations' in request.body
+          ? { observations: request.body.observations }
+          : {}),
+        ...('consultant' in request.body
+          ? { consultant: request.body.consultant }
+          : {}),
+      };
 
+      if (existingTicket.leadId && existingTicket.lead) {
         await tx.lead.update({
           where: { id: existingTicket.leadId },
           data: {
@@ -886,6 +905,65 @@ ticketsRouter.patch(
             });
           }
         }
+      } else {
+        const createdLead = await tx.lead.create({
+          data: {
+            company: request.body.company ?? existingTicket.company,
+            cnpj:
+              'cnpj' in request.body ? request.body.cnpj : existingTicket.cnpj,
+            contact:
+              'contact' in request.body ? request.body.contact : existingTicket.contact,
+            email:
+              'email' in request.body ? request.body.email : existingTicket.email,
+            phone:
+              'phone' in request.body ? request.body.phone : existingTicket.phone,
+            status: 'Ganho',
+            valueInCents: 0,
+            paymentMethod:
+              'paymentMethod' in request.body
+                ? request.body.paymentMethod
+                : existingTicket.paymentMethod,
+            isLite:
+              'plan' in request.body
+                ? request.body.plan === 'Lite'
+                : existingTicket.plan === 'Lite',
+            planId: requestedPlanId || null,
+            sellerId: request.body.sellerId ?? null,
+            sdrId: request.body.sdrId ?? null,
+            originId: request.body.originId ?? null,
+            indicatorId: request.body.indicatorId ?? null,
+            createdById: request.auth.userId,
+            wonAt: new Date(),
+            notes: buildLeadMetadataNotes(nextMetadata),
+          },
+        });
+
+        resolvedLeadId = createdLead.id;
+
+        if (Array.isArray(request.body.leadTasks) && request.body.leadTasks.length) {
+          await tx.leadTask.createMany({
+            data: request.body.leadTasks.map((task) => ({
+              leadId: createdLead.id,
+              title: task.title,
+              type: task.type,
+              done: task.done ?? false,
+              dueDate: task.dueDate ? new Date(task.dueDate) : null,
+              notes: task.notes,
+            })),
+          });
+        }
+
+        if (Array.isArray(request.body.catalogItems) && request.body.catalogItems.length) {
+          await tx.leadCatalogItem.createMany({
+            data: request.body.catalogItems.map((item) => ({
+              leadId: createdLead.id,
+              catalogItemId: item.catalogItemId,
+              enabled: item.enabled ?? true,
+              setupInCents: toCents(item.setupAmount),
+              recurringInCents: toCents(item.recurringAmount),
+            })),
+          });
+        }
       }
 
       if (Array.isArray(request.body.tasks)) {
@@ -909,6 +987,7 @@ ticketsRouter.patch(
       await tx.ticket.update({
         where: { id: existingTicket.id },
         data: {
+          ...(resolvedLeadId && !existingTicket.leadId ? { leadId: resolvedLeadId } : {}),
           ...('status' in request.body ? { status: request.body.status } : {}),
           ...('csStatus' in request.body
             ? { csStatus: request.body.csStatus }
@@ -1256,6 +1335,9 @@ ticketsRouter.patch(
   async (request, response) => {
     const existingTicket = await prisma.ticket.findUnique({
       where: { id: request.params.id },
+      include: {
+        lead: true,
+      },
     });
 
     if (!existingTicket) {
@@ -1292,6 +1374,7 @@ ticketsRouter.patch(
             ? { instance: request.body.instance }
             : {}),
           ...('plan' in request.body ? { plan: request.body.plan } : {}),
+          ...('planId' in request.body ? { planId: request.body.planId } : {}),
           ...('paymentMethod' in request.body
             ? { paymentMethod: request.body.paymentMethod }
             : {}),
@@ -1432,6 +1515,133 @@ ticketsRouter.delete(
       await tx.ticket.delete({
         where: { id: ticket.id },
       });
+    });
+
+    response.status(204).send();
+  },
+);
+
+ticketsRouter.post(
+  '/:id/attachments',
+  requireModuleAccess('IMPLANTACAO', 'edit'),
+  validate({
+    params: z.object({ id: cuidSchema }),
+    body: ticketAttachmentBatchSchema,
+  }),
+  async (request, response) => {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: request.params.id },
+    });
+
+    if (!ticket) {
+      throw new HttpError(404, 'Ticket não encontrado');
+    }
+
+    const created = await prisma.$transaction(
+      request.body.files.map((file) =>
+        prisma.ticketAttachment.create({
+          data: {
+            ticketId: ticket.id,
+            uploadedById: request.auth.userId,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            sizeInBytes: file.sizeInBytes,
+            contentBase64: file.contentBase64,
+          },
+          include: {
+            uploadedBy: true,
+          },
+        }),
+      ),
+    );
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: 'TICKET_ATTACHMENT_CREATE',
+      entityType: 'TicketAttachment',
+      entityId: ticket.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: {
+        ticketId: ticket.id,
+        fileNames: request.body.files.map((file) => file.fileName),
+      },
+    });
+
+    response.status(201).json({
+      items: created.map((attachment) => ({
+        id: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        sizeInBytes: attachment.sizeInBytes,
+        createdAt: attachment.createdAt,
+      })),
+    });
+  },
+);
+
+ticketsRouter.get(
+  '/:id/attachments/:attachmentId',
+  requireModuleAccess('IMPLANTACAO', 'view'),
+  validate({
+    params: z.object({ id: cuidSchema, attachmentId: cuidSchema }),
+  }),
+  async (request, response) => {
+    const attachment = await prisma.ticketAttachment.findFirst({
+      where: {
+        id: request.params.attachmentId,
+        ticketId: request.params.id,
+      },
+    });
+
+    if (!attachment) {
+      throw new HttpError(404, 'Anexo não encontrado');
+    }
+
+    const fileBuffer = Buffer.from(attachment.contentBase64, 'base64');
+    response.setHeader('Content-Type', attachment.mimeType);
+    response.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(attachment.fileName)}"`,
+    );
+    response.setHeader('Content-Length', String(fileBuffer.length));
+    response.send(fileBuffer);
+  },
+);
+
+ticketsRouter.delete(
+  '/:id/attachments/:attachmentId',
+  requireModuleAccess('IMPLANTACAO', 'edit'),
+  validate({
+    params: z.object({ id: cuidSchema, attachmentId: cuidSchema }),
+  }),
+  async (request, response) => {
+    const attachment = await prisma.ticketAttachment.findFirst({
+      where: {
+        id: request.params.attachmentId,
+        ticketId: request.params.id,
+      },
+    });
+
+    if (!attachment) {
+      throw new HttpError(404, 'Anexo não encontrado');
+    }
+
+    await prisma.ticketAttachment.delete({
+      where: { id: attachment.id },
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: 'TICKET_ATTACHMENT_DELETE',
+      entityType: 'TicketAttachment',
+      entityId: attachment.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+      metadata: {
+        ticketId: request.params.id,
+        fileName: attachment.fileName,
+      },
     });
 
     response.status(204).send();

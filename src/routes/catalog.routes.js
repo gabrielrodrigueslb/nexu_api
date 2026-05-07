@@ -100,7 +100,11 @@ async function ensureAnyModuleAccess(request, moduleKeys, requiredLevel = "view"
 }
 
 catalogRouter.get("/lookups", async (request, response) => {
-  await ensureAnyModuleAccess(request, ["CADASTROS", "COMMERCIAL", "DASHBOARD"], "view");
+  await ensureAnyModuleAccess(
+    request,
+    ["CADASTROS", "COMMERCIAL", "DASHBOARD", "IMPLANTACAO", "CLIENTES"],
+    "view",
+  );
 
   const [origins, sdrs, indicators, items, plans] = await prisma.$transaction([
     prisma.origin.findMany({
