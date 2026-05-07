@@ -8,6 +8,7 @@ import { HttpError } from "../lib/http-error.js";
 import { buildLeadMetadataNotes, parseLeadMetadata } from "../lib/lead-metadata.js";
 import { toCents } from "../lib/money.js";
 import { buildPageMeta, getPagination } from "../lib/pagination.js";
+import { hasPricedEnabledCatalogItems } from "../lib/plan-catalog.js";
 import { prisma } from "../lib/prisma.js";
 import { cuidSchema, paginationSchema } from "../lib/schemas.js";
 import { serializeLead } from "../lib/serializers.js";
@@ -261,6 +262,14 @@ async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) 
   const linkedPlan =
     lead.plan || (lead.planId ? await tx.plan.findUnique({ where: { id: lead.planId } }) : null);
   const planName = linkedPlan?.name || (lead.isLite ? "Lite" : "Profissional");
+  const shouldFallbackToPlanTotals =
+    Boolean(linkedPlan) && !hasPricedEnabledCatalogItems(catalogItems);
+  const resolvedSetupInCents = shouldFallbackToPlanTotals
+    ? linkedPlan.setupFeeInCents
+    : toCents(totals.setupAmount);
+  const resolvedRecurringInCents = shouldFallbackToPlanTotals
+    ? linkedPlan.monthlyFeeInCents
+    : toCents(totals.recurringAmount);
 
   if (lead.ticket?.id) {
     return tx.ticket.update({
@@ -274,8 +283,8 @@ async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) 
         plan: planName,
         planId: lead.planId || null,
         paymentMethod: lead.paymentMethod,
-        setupInCents: toCents(totals.setupAmount),
-        recurringInCents: toCents(totals.recurringAmount),
+        setupInCents: resolvedSetupInCents,
+        recurringInCents: resolvedRecurringInCents,
         assigneeId,
       },
     });
@@ -301,8 +310,8 @@ async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) 
       installment: parseLeadMetadata(lead.notes).installment || null,
       type: "novo",
       status: "pendente_financeiro",
-      setupInCents: toCents(totals.setupAmount),
-      recurringInCents: toCents(totals.recurringAmount),
+      setupInCents: resolvedSetupInCents,
+      recurringInCents: resolvedRecurringInCents,
       createdById: actorUserId,
       assigneeId,
     },

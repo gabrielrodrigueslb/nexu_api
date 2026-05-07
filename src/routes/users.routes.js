@@ -1,9 +1,9 @@
 import { Router } from "express";
 import { z } from "zod";
 
-import { normalizeRole, normalizeModuleKey } from "../lib/access-control.js";
+import { normalizeActionKey, normalizeRole, normalizeModuleKey } from "../lib/access-control.js";
 import { writeAuditLog } from "../lib/audit.js";
-import { ACCESS_LEVELS, USER_ROLES, USER_SECTORS } from "../lib/constants.js";
+import { ACCESS_LEVELS, USER_ROLES } from "../lib/constants.js";
 import { HttpError } from "../lib/http-error.js";
 import { buildPageMeta, getPagination } from "../lib/pagination.js";
 import { hashPassword } from "../lib/password.js";
@@ -18,23 +18,27 @@ import { validate } from "../middlewares/validate.js";
 export const usersRouter = Router();
 
 const userRoleSchema = z.enum(USER_ROLES);
-const userSectorSchema = z.enum(USER_SECTORS);
 const accessLevelSchema = z.enum(ACCESS_LEVELS);
 const userModulePermissionSchema = z.object({
   moduleKey: z.string().trim().min(2),
   accessLevel: accessLevelSchema,
 });
+const userActionPermissionSchema = z.object({
+  moduleKey: z.string().trim().min(2),
+  actionKey: z.string().trim().min(2),
+  allowed: z.boolean(),
+});
 
 const listUsersQuerySchema = paginationSchema.extend({
   q: z.string().trim().optional(),
   role: userRoleSchema.optional(),
-  sector: userSectorSchema.optional(),
+  sector: z.string().trim().min(2).optional(),
   active: z.coerce.boolean().optional(),
 });
 const userDirectoryQuerySchema = z.object({
   q: z.string().trim().optional(),
   role: userRoleSchema.optional(),
-  sector: userSectorSchema.optional(),
+  sector: z.string().trim().min(2).optional(),
   active: z.coerce.boolean().optional(),
 });
 
@@ -43,18 +47,20 @@ const createUserSchema = z.object({
   email: z.string().email(),
   password: passwordSchema,
   role: userRoleSchema,
-  sector: userSectorSchema,
+  sector: z.string().trim().min(2).max(120),
   accessPresetId: cuidSchema.optional().nullable(),
   modulePermissions: z.array(userModulePermissionSchema).optional(),
+  actionPermissions: z.array(userActionPermissionSchema).optional(),
   isActive: z.boolean().optional(),
 });
 
 const updateUserSchema = z.object({
   name: z.string().trim().min(3).max(120).optional(),
   role: userRoleSchema.optional(),
-  sector: userSectorSchema.optional(),
+  sector: z.string().trim().min(2).max(120).optional(),
   accessPresetId: cuidSchema.optional().nullable(),
   modulePermissions: z.array(userModulePermissionSchema).optional(),
+  actionPermissions: z.array(userActionPermissionSchema).optional(),
   isActive: z.boolean().optional(),
 });
 const updateOwnProfileSchema = z.object({
@@ -87,10 +93,34 @@ async function validateAccessPreset(accessPresetId, role) {
   return preset;
 }
 
+async function validateSector(sector) {
+  if (!sector) return null;
+  const existing = await prisma.sector.findFirst({
+    where: {
+      OR: [{ key: sector }, { name: sector }],
+      active: true,
+    },
+  });
+
+  if (!existing) {
+    throw new HttpError(422, "Setor invalido");
+  }
+
+  return existing;
+}
+
 function normalizeModulePermissions(modulePermissions = []) {
   return modulePermissions.map((permission) => ({
     moduleKey: normalizeModuleKey(permission.moduleKey),
     accessLevel: permission.accessLevel,
+  }));
+}
+
+function normalizeActionPermissions(actionPermissions = []) {
+  return actionPermissions.map((permission) => ({
+    moduleKey: normalizeModuleKey(permission.moduleKey),
+    actionKey: normalizeActionKey(permission.actionKey),
+    allowed: Boolean(permission.allowed),
   }));
 }
 
@@ -114,6 +144,34 @@ async function ensureUserModulesExist(modulePermissions = []) {
 
   if (missingKeys.length) {
     throw new HttpError(422, `Módulos inexistentes: ${missingKeys.join(", ")}`);
+  }
+}
+
+async function ensureUserActionsExist(actionPermissions = []) {
+  if (!actionPermissions.length) {
+    return;
+  }
+
+  const actions = await prisma.accessAction.findMany({
+    where: {
+      OR: actionPermissions.map((permission) => ({
+        moduleKey: permission.moduleKey,
+        key: permission.actionKey,
+      })),
+    },
+    select: {
+      moduleKey: true,
+      key: true,
+    },
+  });
+
+  const existing = new Set(actions.map((action) => `${action.moduleKey}:${action.key}`));
+  const missing = actionPermissions
+    .map((permission) => `${permission.moduleKey}:${permission.actionKey}`)
+    .filter((key) => !existing.has(key));
+
+  if (missing.length) {
+    throw new HttpError(422, `Acoes inexistentes: ${missing.join(", ")}`);
   }
 }
 
@@ -240,8 +298,11 @@ usersRouter.get(
 usersRouter.post("/", authorize(["admin"]), validate({ body: createUserSchema }), async (request, response) => {
   const email = normalizeEmail(request.body.email);
   await validateAccessPreset(request.body.accessPresetId, request.body.role);
+  const sector = await validateSector(request.body.sector);
   const modulePermissions = normalizeModulePermissions(request.body.modulePermissions);
+  const actionPermissions = normalizeActionPermissions(request.body.actionPermissions);
   await ensureUserModulesExist(modulePermissions);
+  await ensureUserActionsExist(actionPermissions);
   const existingUser = await prisma.user.findUnique({
     where: { email },
   });
@@ -256,12 +317,17 @@ usersRouter.post("/", authorize(["admin"]), validate({ body: createUserSchema })
       email,
       passwordHash: await hashPassword(request.body.password),
       role: request.body.role,
-      sector: request.body.sector,
+      sector: sector?.key || request.body.sector,
       accessPresetId: request.body.accessPresetId,
       isActive: request.body.isActive ?? true,
       modulePermissions: modulePermissions.length
         ? {
             create: modulePermissions,
+          }
+        : undefined,
+      actionPermissions: actionPermissions.length
+        ? {
+            create: actionPermissions,
           }
         : undefined,
     },
@@ -305,7 +371,12 @@ usersRouter.patch(
     const modulePermissions = request.body.modulePermissions
       ? normalizeModulePermissions(request.body.modulePermissions)
       : null;
+    const actionPermissions = request.body.actionPermissions
+      ? normalizeActionPermissions(request.body.actionPermissions)
+      : null;
+    const sector = "sector" in request.body ? await validateSector(request.body.sector) : null;
     await ensureUserModulesExist(modulePermissions || []);
+    await ensureUserActionsExist(actionPermissions || []);
 
     const user = await prisma.$transaction(async (tx) => {
       const updatedUser = await tx.user.update({
@@ -313,7 +384,7 @@ usersRouter.patch(
         data: {
           ...("name" in request.body ? { name: request.body.name } : {}),
           ...("role" in request.body ? { role: request.body.role } : {}),
-          ...("sector" in request.body ? { sector: request.body.sector } : {}),
+          ...("sector" in request.body ? { sector: sector?.key || request.body.sector } : {}),
           ...("isActive" in request.body ? { isActive: request.body.isActive } : {}),
           ...("accessPresetId" in request.body
             ? { accessPresetId: request.body.accessPresetId }
@@ -332,6 +403,23 @@ usersRouter.patch(
               userId: request.params.id,
               moduleKey: permission.moduleKey,
               accessLevel: permission.accessLevel,
+            })),
+          });
+        }
+      }
+
+      if (actionPermissions) {
+        await tx.userActionPermission.deleteMany({
+          where: { userId: request.params.id },
+        });
+
+        if (actionPermissions.length) {
+          await tx.userActionPermission.createMany({
+            data: actionPermissions.map((permission) => ({
+              userId: request.params.id,
+              moduleKey: permission.moduleKey,
+              actionKey: permission.actionKey,
+              allowed: permission.allowed,
             })),
           });
         }

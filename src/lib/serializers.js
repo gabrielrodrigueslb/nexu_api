@@ -1,5 +1,6 @@
 import { parseLeadMetadata } from "./lead-metadata.js";
 import { fromCents } from "./money.js";
+import { resolveLeadCatalogItems } from "./plan-catalog.js";
 
 export function serializeUser(user) {
   if (!user) return null;
@@ -22,6 +23,7 @@ function serializeLeadReference(lead) {
   if (!lead) return null;
 
   const metadata = parseLeadMetadata(lead.notes);
+  const catalogItems = resolveLeadCatalogItems(lead);
 
   return {
     id: lead.id,
@@ -93,7 +95,7 @@ function serializeLeadReference(lead) {
       ...comment,
       author: serializeUser(comment.author),
     })) || [],
-    catalogItems: lead.catalogItems || [],
+    catalogItems,
   };
 }
 
@@ -137,6 +139,7 @@ export function serializeLead(lead) {
     ...rest
   } = lead;
   const metadata = parseLeadMetadata(notes);
+  const resolvedCatalogItems = resolveLeadCatalogItems(lead);
 
   return {
     ...rest,
@@ -196,7 +199,7 @@ export function serializeLead(lead) {
       ...comment,
       author: serializeUser(comment.author),
     })),
-    catalogItems,
+    catalogItems: resolvedCatalogItems,
     createdBy: serializeUser(createdBy),
     ticket: serializeTicketReference(ticket),
   };

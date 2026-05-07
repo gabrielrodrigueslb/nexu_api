@@ -11,6 +11,7 @@ import {
   parseLeadMetadata,
 } from '../lib/lead-metadata.js';
 import { toCents } from '../lib/money.js';
+import { hasPricedEnabledCatalogItems } from '../lib/plan-catalog.js';
 import { buildPageMeta, getPagination } from '../lib/pagination.js';
 import { prisma } from '../lib/prisma.js';
 import {
@@ -104,6 +105,24 @@ function sumCatalogItems(items = []) {
     }),
     { setupAmount: 0, recurringAmount: 0 },
   );
+}
+
+function resolveTicketAmountsInCents(ticket) {
+  const setupInCents = ticket.setupInCents || 0;
+  const recurringInCents = ticket.recurringInCents || 0;
+  const hasExplicitCatalogPrices = hasPricedEnabledCatalogItems(ticket.lead?.catalogItems || []);
+
+  if (setupInCents > 0 || recurringInCents > 0 || hasExplicitCatalogPrices) {
+    return {
+      setupInCents,
+      recurringInCents,
+    };
+  }
+
+  return {
+    setupInCents: ticket.linkedPlan?.setupFeeInCents || 0,
+    recurringInCents: ticket.linkedPlan?.monthlyFeeInCents || 0,
+  };
 }
 
 const listTicketsQuerySchema = paginationSchema.extend({
@@ -312,7 +331,7 @@ ticketsRouter.use(authenticate);
 
 ticketsRouter.get(
   '/closed-clients',
-  requireModuleAccess('COMMERCIAL', 'view'),
+  requireModuleAccess('CLIENTES', 'view'),
   validate({ query: listTicketsQuerySchema }),
   async (request, response) => {
     const { page, limit, skip } = getPagination(request.query);
@@ -386,7 +405,7 @@ ticketsRouter.get(
 
 ticketsRouter.post(
   '/closed-clients/import',
-  requireModuleAccess('COMMERCIAL', 'edit'),
+  requireModuleAccess('CLIENTES', 'manage'),
   validate({ body: importClientsSchema }),
   async (request, response) => {
     const fileBuffer = Buffer.from(request.body.contentBase64, 'base64');
@@ -572,7 +591,7 @@ ticketsRouter.post(
 
 ticketsRouter.get(
   '/closed-clients/:id',
-  requireModuleAccess('COMMERCIAL', 'view'),
+  requireModuleAccess('CLIENTES', 'view'),
   validate({ params: z.object({ id: cuidSchema }) }),
   async (request, response) => {
     const ticket = await prisma.ticket.findUnique({
@@ -590,7 +609,7 @@ ticketsRouter.get(
 
 ticketsRouter.get(
   '/closed-clients/:id/details',
-  requireModuleAccess('COMMERCIAL', 'view'),
+  requireModuleAccess('CLIENTES', 'view'),
   validate({ params: z.object({ id: cuidSchema }) }),
   async (request, response) => {
     const ticket = await prisma.ticket.findUnique({
@@ -688,11 +707,11 @@ ticketsRouter.get(
           totalTickets: relatedTickets.length,
           totalDevTickets: devTickets.length,
           totalSetupAmount: relatedTickets.reduce(
-            (sum, item) => sum + (item.setupInCents || 0),
+            (sum, item) => sum + resolveTicketAmountsInCents(item).setupInCents,
             0,
           ),
           totalRecurringAmount: relatedTickets.reduce(
-            (sum, item) => sum + (item.recurringInCents || 0),
+            (sum, item) => sum + resolveTicketAmountsInCents(item).recurringInCents,
             0,
           ),
         },
@@ -703,7 +722,7 @@ ticketsRouter.get(
 
 ticketsRouter.patch(
   '/closed-clients/:id',
-  requireModuleAccess('COMMERCIAL', 'edit'),
+  requireModuleAccess('CLIENTES', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: updateTicketSchema
@@ -750,10 +769,33 @@ ticketsRouter.patch(
     }
 
     const nextStatus = request.body.status || existingTicket.status;
+    const requestedPlanId =
+      request.body.planId !== undefined
+        ? request.body.planId
+        : existingTicket.planId || existingTicket.lead?.planId;
     const totals = Array.isArray(request.body.catalogItems)
       ? sumCatalogItems(request.body.catalogItems)
       : null;
     const ticket = await prisma.$transaction(async (tx) => {
+      const linkedPlan = requestedPlanId
+        ? await tx.plan.findUnique({
+            where: { id: requestedPlanId },
+          })
+        : existingTicket.linkedPlan || existingTicket.lead?.plan || null;
+      const shouldFallbackToPlanTotals =
+        Boolean(linkedPlan) &&
+        (!Array.isArray(request.body.catalogItems) ||
+          !hasPricedEnabledCatalogItems(request.body.catalogItems));
+      const resolvedSetupInCents = shouldFallbackToPlanTotals
+        ? linkedPlan.setupFeeInCents
+        : totals
+          ? toCents(totals.setupAmount)
+          : null;
+      const resolvedRecurringInCents = shouldFallbackToPlanTotals
+        ? linkedPlan.monthlyFeeInCents
+        : totals
+          ? toCents(totals.recurringAmount)
+          : null;
       if (existingTicket.leadId && existingTicket.lead) {
         const currentMetadata = parseLeadMetadata(existingTicket.lead.notes);
           const nextMetadata = {
@@ -898,11 +940,17 @@ ticketsRouter.patch(
           ...('technicalAssigneeId' in request.body
             ? { technicalAssigneeId: request.body.technicalAssigneeId }
             : {}),
-          ...(totals
+          ...((resolvedSetupInCents !== null && resolvedRecurringInCents !== null)
             ? {
-                setupInCents: toCents(totals.setupAmount),
-                recurringInCents: toCents(totals.recurringAmount),
+                setupInCents: resolvedSetupInCents,
+                recurringInCents: resolvedRecurringInCents,
               }
+            : {}),
+          ...(!('technicalAssigneeId' in request.body) &&
+          nextStatus === 'concluido' &&
+          !existingTicket.technicalAssigneeId &&
+          existingTicket.assigneeId
+            ? { technicalAssigneeId: existingTicket.assigneeId }
             : {}),
           ...(nextStatus === 'concluido' && !existingTicket.completedAt
             ? { completedAt: new Date() }
@@ -935,7 +983,7 @@ ticketsRouter.patch(
 
 ticketsRouter.patch(
   '/closed-clients/:id/confirm-payment',
-  requireModuleAccess('COMMERCIAL', 'edit'),
+  requireModuleAccess('CLIENTES', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
   }),
@@ -943,7 +991,12 @@ ticketsRouter.patch(
     const existingTicket = await prisma.ticket.findUnique({
       where: { id: request.params.id },
       include: {
-        lead: true,
+        lead: {
+          include: {
+            plan: true,
+          },
+        },
+        linkedPlan: true,
       },
     });
 
@@ -975,13 +1028,21 @@ ticketsRouter.patch(
 
 ticketsRouter.patch(
   '/closed-clients/:id/approve-implementation',
-  requireModuleAccess('COMMERCIAL', 'edit'),
+  requireModuleAccess('CLIENTES', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
   }),
   async (request, response) => {
     const existingTicket = await prisma.ticket.findUnique({
       where: { id: request.params.id },
+      include: {
+        linkedPlan: true,
+        lead: {
+          include: {
+            plan: true,
+          },
+        },
+      },
     });
 
     if (!existingTicket) {
@@ -1019,7 +1080,7 @@ ticketsRouter.patch(
 
 ticketsRouter.post(
   '/closed-clients/:id/comments',
-  requireModuleAccess('COMMERCIAL', 'edit'),
+  requireModuleAccess('CLIENTES', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: ticketCommentSchema,
@@ -1257,6 +1318,12 @@ ticketsRouter.patch(
             : {}),
           ...('technicalAssigneeId' in request.body
             ? { technicalAssigneeId: request.body.technicalAssigneeId }
+            : {}),
+          ...(!('technicalAssigneeId' in request.body) &&
+          nextStatus === 'concluido' &&
+          !existingTicket.technicalAssigneeId &&
+          existingTicket.assigneeId
+            ? { technicalAssigneeId: existingTicket.assigneeId }
             : {}),
           ...('completedAt' in request.body
             ? {

@@ -1,10 +1,30 @@
 import {
+  DEFAULT_ACTIONS,
   DEFAULT_MODULES,
+  DEFAULT_SECTORS,
   SYSTEM_PRESET_DEFINITIONS,
 } from "../src/lib/constants.js";
 import { buildLeadMetadataNotes } from "../src/lib/lead-metadata.js";
 import { prisma } from "../src/lib/prisma.js";
 import { hashPassword } from "../src/lib/password.js";
+
+async function syncDefaultSectors() {
+  for (const sectorDefinition of DEFAULT_SECTORS) {
+    await prisma.sector.upsert({
+      where: { key: sectorDefinition.key },
+      update: {
+        name: sectorDefinition.name,
+        description: sectorDefinition.description,
+        sortOrder: sectorDefinition.sortOrder,
+        active: true,
+      },
+      create: {
+        ...sectorDefinition,
+        active: true,
+      },
+    });
+  }
+}
 
 async function syncDefaultModules() {
   for (const moduleDefinition of DEFAULT_MODULES) {
@@ -13,6 +33,9 @@ async function syncDefaultModules() {
       update: {
         name: moduleDefinition.name,
         description: moduleDefinition.description,
+        parentKey: moduleDefinition.parentKey || null,
+        path: moduleDefinition.path || null,
+        scope: moduleDefinition.scope || "MODULE",
         sortOrder: moduleDefinition.sortOrder,
         active: true,
         isSystem: true,
@@ -23,6 +46,39 @@ async function syncDefaultModules() {
         isSystem: true,
       },
     });
+  }
+}
+
+async function syncDefaultActions() {
+  const pageModules = DEFAULT_MODULES.filter((moduleDefinition) => moduleDefinition.scope === "PAGE");
+
+  for (const moduleDefinition of pageModules) {
+    for (const actionDefinition of DEFAULT_ACTIONS) {
+      await prisma.accessAction.upsert({
+        where: {
+          moduleKey_key: {
+            moduleKey: moduleDefinition.key,
+            key: actionDefinition.key,
+          },
+        },
+        update: {
+          label: actionDefinition.label,
+          description: `${actionDefinition.label} em ${moduleDefinition.name}`,
+          sortOrder: actionDefinition.sortOrder,
+          active: true,
+          isSystem: true,
+        },
+        create: {
+          moduleKey: moduleDefinition.key,
+          key: actionDefinition.key,
+          label: actionDefinition.label,
+          description: `${actionDefinition.label} em ${moduleDefinition.name}`,
+          sortOrder: actionDefinition.sortOrder,
+          active: true,
+          isSystem: true,
+        },
+      });
+    }
   }
 }
 
@@ -75,13 +131,18 @@ async function upsertUser({
   modulePermissions = [],
 }) {
   const passwordHash = await hashPassword(password);
+  const normalizedSector = await prisma.sector.findFirst({
+    where: {
+      OR: [{ key: sector }, { name: sector }],
+    },
+  });
 
   const user = await prisma.user.upsert({
     where: { email },
     update: {
       name,
       role,
-      sector,
+      sector: normalizedSector?.key || sector,
       accessPresetId: accessPresetId || null,
       isActive: true,
       passwordHash,
@@ -90,7 +151,7 @@ async function upsertUser({
       name,
       email,
       role,
-      sector,
+      sector: normalizedSector?.key || sector,
       accessPresetId: accessPresetId || null,
       isActive: true,
       passwordHash,
@@ -1880,7 +1941,9 @@ async function seedOperationalRecords({ usersByEmail, leadsByCompany, ticketsByC
 }
 
 async function main() {
+  await syncDefaultSectors();
   await syncDefaultModules();
+  await syncDefaultActions();
   await syncSystemPresets();
 
   const basicCommercialPreset = await getPresetBySlug("basic-commercial-view");
@@ -1889,6 +1952,45 @@ async function main() {
   const leaderFinancePreset = await getPresetBySlug("leader-finance");
   const leaderImplantacaoPreset = await getPresetBySlug("leader-implantacao");
   const leaderSupportPreset = await getPresetBySlug("leader-support");
+  const developmentBasicModules = [
+    { moduleKey: "DASHBOARD", accessLevel: "view" },
+    { moduleKey: "DEV_KANBAN", accessLevel: "edit" },
+    { moduleKey: "DEV_SPRINTS", accessLevel: "edit" },
+    { moduleKey: "DEV_BIBLIOTECA", accessLevel: "view" },
+    { moduleKey: "CLIENTES", accessLevel: "view" },
+  ];
+  const implantacaoBasicModules = [
+    { moduleKey: "DASHBOARD", accessLevel: "view" },
+    { moduleKey: "IMPLANTACAO_KANBAN", accessLevel: "edit" },
+    { moduleKey: "IMPLANTACAO_TAREFAS", accessLevel: "edit" },
+    { moduleKey: "CLIENTES", accessLevel: "view" },
+  ];
+  const commercialEditModules = [
+    { moduleKey: "DASHBOARD", accessLevel: "view" },
+    { moduleKey: "CRM_VENDA", accessLevel: "edit" },
+    { moduleKey: "CRM_TAREFAS", accessLevel: "edit" },
+    { moduleKey: "CRM_PERDIDOS", accessLevel: "view" },
+    { moduleKey: "CLIENTES", accessLevel: "edit" },
+  ];
+  const commercialViewModules = [
+    { moduleKey: "DASHBOARD", accessLevel: "view" },
+    { moduleKey: "CRM_VENDA", accessLevel: "view" },
+    { moduleKey: "CRM_TAREFAS", accessLevel: "view" },
+    { moduleKey: "CRM_PERDIDOS", accessLevel: "view" },
+    { moduleKey: "CLIENTES", accessLevel: "view" },
+  ];
+  const financeBasicModules = [
+    { moduleKey: "DASHBOARD", accessLevel: "view" },
+    { moduleKey: "FINANCEIRO_COBRANCA", accessLevel: "edit" },
+    { moduleKey: "FINANCEIRO_INDICADORES", accessLevel: "view" },
+    { moduleKey: "FINANCEIRO_FLUXO", accessLevel: "view" },
+    { moduleKey: "CLIENTES", accessLevel: "view" },
+  ];
+  const supportBasicModules = [
+    { moduleKey: "DASHBOARD", accessLevel: "view" },
+    { moduleKey: "SUPORTE", accessLevel: "view" },
+    { moduleKey: "CLIENTES", accessLevel: "view" },
+  ];
 
   const users = await Promise.all([
     upsertUser({
@@ -1912,10 +2014,7 @@ async function main() {
       role: "basic",
       sector: "Desenvolvimento",
       password: "Nexu@12345",
-      modulePermissions: [
-        { moduleKey: "DESENVOLVIMENTO", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: developmentBasicModules,
     }),
     upsertUser({
       name: "Bruno Lima",
@@ -1923,10 +2022,7 @@ async function main() {
       role: "basic",
       sector: "Desenvolvimento",
       password: "Nexu@12345",
-      modulePermissions: [
-        { moduleKey: "DESENVOLVIMENTO", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: developmentBasicModules,
     }),
     upsertUser({
       name: "Carla Nunes",
@@ -1934,10 +2030,7 @@ async function main() {
       role: "basic",
       sector: "Desenvolvimento",
       password: "Nexu@12345",
-      modulePermissions: [
-        { moduleKey: "DESENVOLVIMENTO", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: developmentBasicModules,
     }),
     upsertUser({
       name: "Diego Rocha",
@@ -1945,10 +2038,7 @@ async function main() {
       role: "basic",
       sector: "Desenvolvimento",
       password: "Nexu@12345",
-      modulePermissions: [
-        { moduleKey: "DESENVOLVIMENTO", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: developmentBasicModules,
     }),
     upsertUser({
       name: "Fernanda Rocha",
@@ -1972,10 +2062,7 @@ async function main() {
       role: "basic",
       sector: "Implantacao",
       password: "Nexu@12345",
-      modulePermissions: [
-        { moduleKey: "IMPLANTACAO", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: implantacaoBasicModules,
     }),
     upsertUser({
       name: "Bianca Souza",
@@ -1984,10 +2071,7 @@ async function main() {
       sector: "Comercial",
       password: "Nexu@12345",
       accessPresetId: basicCommercialPreset?.id,
-      modulePermissions: [
-        { moduleKey: "COMMERCIAL", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: commercialEditModules,
     }),
     upsertUser({
       name: "Lucas Lima",
@@ -1996,10 +2080,7 @@ async function main() {
       sector: "Comercial",
       password: "Nexu@12345",
       accessPresetId: basicCommercialPreset?.id,
-      modulePermissions: [
-        { moduleKey: "COMMERCIAL", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: commercialEditModules,
     }),
     upsertUser({
       name: "Carla Mendes",
@@ -2008,10 +2089,7 @@ async function main() {
       sector: "Comercial",
       password: "Nexu@12345",
       accessPresetId: basicCommercialPreset?.id,
-      modulePermissions: [
-        { moduleKey: "COMMERCIAL", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: commercialEditModules,
     }),
     upsertUser({
       name: "Marina",
@@ -2020,10 +2098,7 @@ async function main() {
       sector: "Comercial",
       password: "Nexu@12345",
       accessPresetId: basicCommercialPreset?.id,
-      modulePermissions: [
-        { moduleKey: "COMMERCIAL", accessLevel: "view" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: commercialViewModules,
     }),
     upsertUser({
       name: "Leo Silva",
@@ -2032,10 +2107,7 @@ async function main() {
       sector: "Comercial",
       password: "Nexu@12345",
       accessPresetId: basicCommercialPreset?.id,
-      modulePermissions: [
-        { moduleKey: "COMMERCIAL", accessLevel: "view" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: commercialViewModules,
     }),
     upsertUser({
       name: "Joao Ramos",
@@ -2044,10 +2116,7 @@ async function main() {
       sector: "Comercial",
       password: "Nexu@12345",
       accessPresetId: basicCommercialPreset?.id,
-      modulePermissions: [
-        { moduleKey: "COMMERCIAL", accessLevel: "view" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: commercialViewModules,
     }),
     upsertUser({
       name: "Celia Financeiro",
@@ -2056,10 +2125,7 @@ async function main() {
       sector: "Financeiro",
       password: "Nexu@12345",
       accessPresetId: basicFinancePreset?.id,
-      modulePermissions: [
-        { moduleKey: "FINANCEIRO", accessLevel: "edit" },
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-      ],
+      modulePermissions: financeBasicModules,
     }),
     upsertUser({
       name: "Sonia Suporte",
@@ -2075,10 +2141,7 @@ async function main() {
       role: "basic",
       sector: "CS",
       password: "Nexu@12345",
-      modulePermissions: [
-        { moduleKey: "DASHBOARD", accessLevel: "view" },
-        { moduleKey: "SUPORTE", accessLevel: "view" },
-      ],
+      modulePermissions: supportBasicModules,
     }),
   ]);
 

@@ -24,6 +24,7 @@ model User {
   updatedAt           DateTime       @updatedAt
   accessPreset        AccessPreset?  @relation(fields: [accessPresetId], references: [id], onDelete: SetNull)
   modulePermissions   UserModulePermission[]
+  actionPermissions   UserActionPermission[]
   refreshTokens       RefreshToken[]
   auditLogs           AuditLog[]     @relation("ActorAuditLogs")
   createdLeads        Lead[]         @relation("LeadCreator")
@@ -44,6 +45,19 @@ model User {
   @@index([sector, isActive])
   @@index([accessPresetId])
   @@index([createdAt])
+}
+
+model Sector {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  name        String   @unique
+  description String?
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([active, sortOrder])
 }
 
 model RefreshToken {
@@ -86,16 +100,25 @@ model AccessModule {
   key               String                   @id
   name              String
   description       String?
+  parentKey         String?
+  path              String?
+  scope             String                   @default("MODULE")
   active            Boolean                  @default(true)
   isSystem          Boolean                  @default(true)
   sortOrder         Int                      @default(0)
   createdAt         DateTime                 @default(now())
   updatedAt         DateTime                 @updatedAt
+  parent            AccessModule?            @relation("AccessModuleHierarchy", fields: [parentKey], references: [key], onDelete: SetNull)
+  children          AccessModule[]           @relation("AccessModuleHierarchy")
+  actions           AccessAction[]
   presetPermissions AccessPresetPermission[]
   userPermissions   UserModulePermission[]
   trashItems        TrashItem[]
+  presetActionPermissions AccessPresetActionPermission[]
+  userActionPermissions   UserActionPermission[]
 
   @@index([active, sortOrder])
+  @@index([parentKey, active, sortOrder])
 }
 
 model AccessPreset {
@@ -109,6 +132,7 @@ model AccessPreset {
   updatedAt         DateTime                 @updatedAt
   users             User[]
   modulePermissions AccessPresetPermission[]
+  actionPermissions AccessPresetActionPermission[]
 
   @@index([role, isSystem])
   @@index([createdAt])
@@ -140,6 +164,57 @@ model UserModulePermission {
 
   @@unique([userId, moduleKey])
   @@index([moduleKey, accessLevel])
+}
+
+model AccessAction {
+  id          String   @id @default(cuid())
+  moduleKey    String
+  key         String
+  label       String
+  description String?
+  active      Boolean  @default(true)
+  isSystem    Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  module      AccessModule @relation(fields: [moduleKey], references: [key], onDelete: Cascade)
+  presetPermissions AccessPresetActionPermission[]
+  userPermissions   UserActionPermission[]
+
+  @@unique([moduleKey, key])
+  @@index([moduleKey, active, sortOrder])
+}
+
+model AccessPresetActionPermission {
+  id         String   @id @default(cuid())
+  presetId    String
+  moduleKey   String
+  actionKey   String
+  allowed    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  preset     AccessPreset @relation(fields: [presetId], references: [id], onDelete: Cascade)
+  module     AccessModule @relation(fields: [moduleKey], references: [key], onDelete: Cascade)
+  action     AccessAction @relation(fields: [moduleKey, actionKey], references: [moduleKey, key], onDelete: Cascade)
+
+  @@unique([presetId, moduleKey, actionKey])
+  @@index([moduleKey, actionKey, allowed])
+}
+
+model UserActionPermission {
+  id         String   @id @default(cuid())
+  userId      String
+  moduleKey   String
+  actionKey   String
+  allowed    Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  module     AccessModule @relation(fields: [moduleKey], references: [key], onDelete: Cascade)
+  action     AccessAction @relation(fields: [moduleKey, actionKey], references: [moduleKey, key], onDelete: Cascade)
+
+  @@unique([userId, moduleKey, actionKey])
+  @@index([moduleKey, actionKey, allowed])
 }
 
 model TrashItem {
