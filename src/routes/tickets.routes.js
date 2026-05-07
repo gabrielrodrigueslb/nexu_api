@@ -16,6 +16,7 @@ import { buildPageMeta, getPagination } from '../lib/pagination.js';
 import { prisma } from '../lib/prisma.js';
 import {
   cuidSchema,
+  entityIdSchema,
   instanceDomainSchema,
   paginationSchema,
 } from '../lib/schemas.js';
@@ -83,7 +84,7 @@ const createTicketSchema = z.object({
   site: z.string().trim().max(255).optional().nullable(),
   instance: instanceDomainSchema.optional().nullable(),
   plan: z.string().trim().max(80).optional().nullable(),
-  planId: cuidSchema.optional().nullable(),
+  planId: entityIdSchema.optional().nullable(),
   paymentMethod: z.string().trim().max(40).optional().nullable(),
   installment: z.string().trim().max(40).optional().nullable(),
   type: ticketTypeSchema,

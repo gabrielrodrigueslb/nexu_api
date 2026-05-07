@@ -12,7 +12,7 @@ import {
 } from "../lib/crm-funnels.js";
 import { HttpError } from "../lib/http-error.js";
 import { prisma } from "../lib/prisma.js";
-import { cuidSchema } from "../lib/schemas.js";
+import { cuidSchema, entityIdSchema } from "../lib/schemas.js";
 import { slugify } from "../lib/text.js";
 import { moveEntityToTrash } from "../lib/trash.js";
 import { authenticate } from "../middlewares/authenticate.js";
@@ -212,7 +212,7 @@ catalogRouter.patch(
   "/crm-funnels/:id",
   requireModuleAccess("CADASTROS", "edit"),
   validate({
-    params: z.object({ id: cuidSchema }),
+    params: z.object({ id: entityIdSchema }),
     body: crmFunnelSchema.partial(),
   }),
   async (request, response) => {
@@ -353,7 +353,7 @@ catalogRouter.patch(
   "/items/:id",
   requireModuleAccess("CADASTROS", "edit"),
   validate({
-    params: z.object({ id: cuidSchema }),
+    params: z.object({ id: entityIdSchema }),
     body: catalogItemSchema.partial(),
   }),
   async (request, response) => {

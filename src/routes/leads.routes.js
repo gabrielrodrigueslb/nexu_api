@@ -10,7 +10,7 @@ import { toCents } from "../lib/money.js";
 import { buildPageMeta, getPagination } from "../lib/pagination.js";
 import { hasPricedEnabledCatalogItems } from "../lib/plan-catalog.js";
 import { prisma } from "../lib/prisma.js";
-import { cuidSchema, paginationSchema } from "../lib/schemas.js";
+import { cuidSchema, entityIdSchema, paginationSchema } from "../lib/schemas.js";
 import { serializeLead } from "../lib/serializers.js";
 import { moveEntityToTrash } from "../lib/trash.js";
 import { authenticate } from "../middlewares/authenticate.js";
@@ -55,7 +55,7 @@ const createLeadSchema = z.object({
   installment: z.string().trim().max(40).optional().nullable(),
   site: z.string().trim().max(255).optional().nullable(),
   isLite: z.boolean().optional(),
-  planId: cuidSchema.optional().nullable(),
+  planId: entityIdSchema.optional().nullable(),
   sellerId: cuidSchema.optional().nullable(),
   sdrId: cuidSchema.optional().nullable(),
   originId: cuidSchema.optional().nullable(),

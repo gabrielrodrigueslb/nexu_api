@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 export const cuidSchema = z.string().cuid();
+export const entityIdSchema = z.string().trim().min(1).max(191);
 
 export const passwordSchema = z
   .string()
