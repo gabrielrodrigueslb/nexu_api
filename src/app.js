@@ -11,6 +11,8 @@ import { errorHandler } from "./middlewares/error-handler.js";
 import { notFound } from "./middlewares/not-found.js";
 import { apiRouter } from "./routes/index.js";
 
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 export function createApp() {
   const app = express();
 
@@ -40,9 +42,23 @@ export function createApp() {
   app.use(
     rateLimit({
       windowMs: env.RATE_LIMIT_WINDOW_MS,
+      limit: Math.max(env.RATE_LIMIT_MAX * 10, 1000),
+      standardHeaders: true,
+      legacyHeaders: false,
+      skip(request) {
+        return !READ_METHODS.has(request.method);
+      },
+    }),
+  );
+  app.use(
+    rateLimit({
+      windowMs: env.RATE_LIMIT_WINDOW_MS,
       limit: env.RATE_LIMIT_MAX,
       standardHeaders: true,
       legacyHeaders: false,
+      skip(request) {
+        return READ_METHODS.has(request.method) || request.path.startsWith("/api/auth");
+      },
     }),
   );
   app.use(hpp());

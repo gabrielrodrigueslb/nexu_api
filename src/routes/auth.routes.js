@@ -29,6 +29,7 @@ const authLimiter = rateLimit({
   limit: env.AUTH_RATE_LIMIT_MAX,
   standardHeaders: true,
   legacyHeaders: false,
+  skipSuccessfulRequests: true,
   message: {
     error: {
       message: "Muitas tentativas. Aguarde antes de tentar novamente.",
