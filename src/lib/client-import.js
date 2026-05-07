@@ -26,10 +26,39 @@ function parseCsvLine(line) {
 }
 
 function toNumber(value) {
-  const normalized = String(value || "")
-    .replace(/\./g, "")
-    .replace(",", ".")
-    .trim();
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : 0;
+  }
+
+  const raw = String(value || "").trim();
+  if (!raw) return 0;
+
+  const sanitized = raw.replace(/\s+/g, "");
+  const lastComma = sanitized.lastIndexOf(",");
+  const lastDot = sanitized.lastIndexOf(".");
+
+  let normalized = sanitized;
+
+  if (lastComma >= 0 && lastDot >= 0) {
+    if (lastComma > lastDot) {
+      normalized = sanitized.replace(/\./g, "").replace(",", ".");
+    } else {
+      normalized = sanitized.replace(/,/g, "");
+    }
+  } else if (lastComma >= 0) {
+    const decimalDigits = sanitized.length - lastComma - 1;
+    normalized =
+      decimalDigits > 0 && decimalDigits <= 2
+        ? sanitized.replace(/\./g, "").replace(",", ".")
+        : sanitized.replace(/,/g, "");
+  } else if (lastDot >= 0) {
+    const decimalDigits = sanitized.length - lastDot - 1;
+    normalized =
+      decimalDigits > 0 && decimalDigits <= 2
+        ? sanitized.replace(/,/g, "")
+        : sanitized.replace(/\./g, "");
+  }
+
   const parsed = Number(normalized);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
