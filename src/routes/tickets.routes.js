@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { writeAuditLog } from '../lib/audit.js';
 import { parseImportedClientsFile } from '../lib/client-import.js';
+import { compareAccessLevel, resolveUserAccess } from '../lib/access-control.js';
 import { TICKET_STATUSES, TICKET_TYPES } from '../lib/constants.js';
 import { HttpError } from '../lib/http-error.js';
 import {
@@ -348,6 +349,31 @@ function collectClientInstances(ticket, relatedTickets = [], lead = null) {
 }
 
 ticketsRouter.use(authenticate);
+
+const SHARED_TICKET_MODULES = ['IMPLANTACAO', 'FINANCEIRO', 'COMMERCIAL', 'CLIENTES'];
+
+async function ensureSharedTicketAccess(request, requiredAccessLevel = 'view') {
+  if (!request.auth?.userId) {
+    throw new HttpError(401, 'Não autenticado');
+  }
+
+  if (request.auth.role === 'admin') {
+    return;
+  }
+
+  if (!request.auth.access) {
+    request.auth.access = await resolveUserAccess(request.auth.userId);
+  }
+
+  const permissionMap = request.auth.access?.permissionMap || {};
+  const hasAccess = SHARED_TICKET_MODULES.some((moduleKey) =>
+    compareAccessLevel(permissionMap[moduleKey] || 'none', requiredAccessLevel),
+  );
+
+  if (!hasAccess) {
+    throw new HttpError(403, 'Sem permissão para acessar este ticket');
+  }
+}
 
 ticketsRouter.get(
   '/closed-clients',
@@ -1524,12 +1550,13 @@ ticketsRouter.delete(
 
 ticketsRouter.post(
   '/:id/attachments',
-  requireModuleAccess('IMPLANTACAO', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: ticketAttachmentBatchSchema,
   }),
   async (request, response) => {
+    await ensureSharedTicketAccess(request, 'edit');
+
     const ticket = await prisma.ticket.findUnique({
       where: { id: request.params.id },
     });
@@ -1583,11 +1610,12 @@ ticketsRouter.post(
 
 ticketsRouter.get(
   '/:id/attachments/:attachmentId',
-  requireModuleAccess('IMPLANTACAO', 'view'),
   validate({
     params: z.object({ id: cuidSchema, attachmentId: cuidSchema }),
   }),
   async (request, response) => {
+    await ensureSharedTicketAccess(request, 'view');
+
     const attachment = await prisma.ticketAttachment.findFirst({
       where: {
         id: request.params.attachmentId,
@@ -1612,11 +1640,12 @@ ticketsRouter.get(
 
 ticketsRouter.delete(
   '/:id/attachments/:attachmentId',
-  requireModuleAccess('IMPLANTACAO', 'edit'),
   validate({
     params: z.object({ id: cuidSchema, attachmentId: cuidSchema }),
   }),
   async (request, response) => {
+    await ensureSharedTicketAccess(request, 'edit');
+
     const attachment = await prisma.ticketAttachment.findFirst({
       where: {
         id: request.params.attachmentId,
@@ -1694,12 +1723,13 @@ ticketsRouter.post(
 
 ticketsRouter.post(
   '/:id/comments',
-  requireModuleAccess('IMPLANTACAO', 'edit'),
   validate({
     params: z.object({ id: cuidSchema }),
     body: ticketCommentSchema,
   }),
   async (request, response) => {
+    await ensureSharedTicketAccess(request, 'edit');
+
     const ticket = await prisma.ticket.findUnique({
       where: { id: request.params.id },
     });

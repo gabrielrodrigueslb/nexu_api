@@ -127,7 +127,29 @@ const leadInclude = {
     },
   },
   createdBy: true,
-  ticket: true,
+  ticket: {
+    include: {
+      assignee: true,
+      technicalAssignee: true,
+      linkedPlan: true,
+      comments: {
+        include: {
+          author: true,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      },
+      attachments: {
+        include: {
+          uploadedBy: true,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+      },
+    },
+  },
 };
 
 const leadAutofillTicketInclude = {
@@ -286,6 +308,7 @@ async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) 
         setupInCents: resolvedSetupInCents,
         recurringInCents: resolvedRecurringInCents,
         assigneeId,
+        status: "pendente_financeiro",
       },
     });
   }
@@ -316,6 +339,18 @@ async function createOrSyncLeadTicket(tx, lead, actorUserId, catalogItems = []) 
       assigneeId,
     },
   });
+}
+
+async function getLeadCatalogItemsForTicket(tx, leadId) {
+  const items = await tx.leadCatalogItem.findMany({
+    where: { leadId },
+  });
+
+  return items.map((item) => ({
+    enabled: item.enabled,
+    setupAmount: item.setupInCents / 100,
+    recurringAmount: item.recurringInCents / 100,
+  }));
 }
 
 leadsRouter.get(
@@ -571,13 +606,8 @@ leadsRouter.post(
         },
         include: {
           ...leadInclude,
-          ticket: true,
         },
       });
-
-      if (workflow.status === "Ganho") {
-        await createOrSyncLeadTicket(tx, createdLead, request.auth.userId, request.body.catalogItems);
-      }
 
       return tx.lead.findUnique({
         where: { id: createdLead.id },
@@ -727,23 +757,13 @@ leadsRouter.patch(
         }
       }
 
-      if (workflow.status === "Ganho") {
-        await createOrSyncLeadTicket(
-          tx,
-          { ...updatedLead, ticket: existingLead.ticket, notes: buildLeadMetadataNotes(nextMetadata) },
-          request.auth.userId,
-          Array.isArray(request.body.catalogItems)
-            ? request.body.catalogItems
-            : (
-                await tx.leadCatalogItem.findMany({
-                  where: { leadId: updatedLead.id },
-                })
-              ).map((item) => ({
-                enabled: item.enabled,
-                setupAmount: item.setupInCents / 100,
-                recurringAmount: item.recurringInCents / 100,
-              })),
-        );
+      if (workflow.status === "Ganho" && existingLead.ticket?.id) {
+        await tx.ticket.update({
+          where: { id: existingLead.ticket.id },
+          data: {
+            status: "em_implantacao",
+          },
+        });
       }
 
       return tx.lead.findUnique({
@@ -760,6 +780,58 @@ leadsRouter.patch(
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
       metadata: request.body,
+    });
+
+  response.json({ item: serializeLead(lead) });
+  },
+);
+
+leadsRouter.post(
+  "/:id/request-payment",
+  requireModuleAccess("COMMERCIAL", "edit"),
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    const lead = await prisma.$transaction(async (tx) => {
+      const existingLead = await tx.lead.findUnique({
+        where: { id: request.params.id },
+        include: {
+          ...leadInclude,
+        },
+      });
+
+      if (!existingLead) {
+        throw new HttpError(404, "Lead não encontrado");
+      }
+
+      if (existingLead.status === "Perdido") {
+        throw new HttpError(422, "Não é possível solicitar pagamento para um lead perdido.");
+      }
+
+      const catalogItems = Array.isArray(existingLead.catalogItems)
+        ? existingLead.catalogItems.map((item) => ({
+            enabled: item.enabled,
+            setupAmount: item.setupInCents / 100,
+            recurringAmount: item.recurringInCents / 100,
+          }))
+        : await getLeadCatalogItemsForTicket(tx, existingLead.id);
+
+      await createOrSyncLeadTicket(tx, existingLead, request.auth.userId, catalogItems);
+
+      return tx.lead.findUnique({
+        where: { id: existingLead.id },
+        include: leadInclude,
+      });
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "LEAD_REQUEST_PAYMENT",
+      entityType: "Lead",
+      entityId: lead.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
     });
 
     response.json({ item: serializeLead(lead) });

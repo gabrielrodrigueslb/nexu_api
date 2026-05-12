@@ -148,7 +148,9 @@ function serializeContractTicket(ticket) {
     contact: ticket.contact,
     email: ticket.email,
     phone: ticket.phone,
+    instance: ticket.instance,
     plan: ticket.plan,
+    planId: ticket.planId || null,
     paymentMethod: ticket.paymentMethod,
     installment: ticket.installment,
     type: ticket.type,
@@ -179,6 +181,32 @@ function serializeContractTicket(ticket) {
             : null,
         }
       : null,
+    comments:
+      ticket.comments?.map((comment) => ({
+        id: comment.id,
+        message: comment.message,
+        createdAt: comment.createdAt,
+        author: comment.author
+          ? {
+              id: comment.author.id,
+              name: comment.author.name,
+            }
+          : null,
+      })) || [],
+    attachments:
+      ticket.attachments?.map((attachment) => ({
+        id: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        sizeInBytes: attachment.sizeInBytes,
+        createdAt: attachment.createdAt,
+        uploadedBy: attachment.uploadedBy
+          ? {
+              id: attachment.uploadedBy.id,
+              name: attachment.uploadedBy.name,
+            }
+          : null,
+      })) || [],
   };
 }
 
@@ -204,6 +232,22 @@ financeRouter.get(
       },
       include: {
         assignee: true,
+        comments: {
+          include: {
+            author: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+        attachments: {
+          include: {
+            uploadedBy: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
         lead: {
           include: {
             seller: true,
@@ -230,6 +274,22 @@ financeRouter.patch(
       where: { id: request.params.ticketId },
       include: {
         assignee: true,
+        comments: {
+          include: {
+            author: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+        attachments: {
+          include: {
+            uploadedBy: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
         lead: {
           include: {
             seller: true,
@@ -249,6 +309,22 @@ financeRouter.patch(
       },
       include: {
         assignee: true,
+        comments: {
+          include: {
+            author: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
+        attachments: {
+          include: {
+            uploadedBy: true,
+          },
+          orderBy: {
+            createdAt: "desc",
+          },
+        },
         lead: {
           include: {
             seller: true,

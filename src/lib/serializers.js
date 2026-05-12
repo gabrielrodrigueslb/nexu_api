@@ -115,10 +115,28 @@ function serializeTicketReference(ticket) {
     technicalAssigneeId: ticket.technicalAssigneeId,
     setupAmount: fromCents(ticket.setupInCents),
     recurringAmount: fromCents(ticket.recurringInCents),
+    plan: ticket.linkedPlan?.name || ticket.plan || null,
+    planId: ticket.planId || null,
     createdAt: ticket.createdAt,
     updatedAt: ticket.updatedAt,
     completedAt: ticket.completedAt,
     canceledAt: ticket.canceledAt,
+    attachments:
+      ticket.attachments?.map((attachment) => ({
+        id: attachment.id,
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        sizeInBytes: attachment.sizeInBytes,
+        createdAt: attachment.createdAt,
+        uploadedBy: serializeUser(attachment.uploadedBy),
+      })) || [],
+    comments:
+      ticket.comments?.map((comment) => ({
+        id: comment.id,
+        message: comment.message,
+        createdAt: comment.createdAt,
+        author: serializeUser(comment.author),
+      })) || [],
   };
 }
 
@@ -160,6 +178,7 @@ export function serializeLead(lead) {
     passThroughAmount: metadata.passThroughAmount || 0,
     lossReason: metadata.lossReason || null,
     generatedTicketId: ticket?.code || null,
+    generatedTicketStatus: ticket?.status || null,
     seller: serializeUser(seller),
     sdr,
     origin,
