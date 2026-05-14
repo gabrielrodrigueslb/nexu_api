@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -559,6 +559,8 @@ model TicketAttachment {
   id           String   @id @default(cuid())
   ticketId     String
   uploadedById String
+  title        String?
+  description  String?
   fileName     String
   mimeType     String
   sizeInBytes  Int

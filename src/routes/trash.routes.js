@@ -48,6 +48,7 @@ async function ensureEntityDoesNotExist(tx, entityType, entityId) {
     Indicator: tx.indicator,
     Lead: tx.lead,
     Ticket: tx.ticket,
+    TicketAttachment: tx.ticketAttachment,
   };
 
   const model = modelMap[entityType];
@@ -188,6 +189,11 @@ async function restoreTrashItem(tx, trashItem) {
           tasks: payload.tasks?.length ? { create: payload.tasks } : undefined,
           comments: payload.comments?.length ? { create: payload.comments } : undefined,
         },
+      });
+      break;
+    case "TicketAttachment":
+      await tx.ticketAttachment.create({
+        data: payload.attachment,
       });
       break;
     default:

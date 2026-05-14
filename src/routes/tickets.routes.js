@@ -44,6 +44,8 @@ const ticketCommentSchema = z.object({
 });
 
 const ticketAttachmentInputSchema = z.object({
+  title: z.string().trim().min(1).max(160).optional().nullable(),
+  description: z.string().trim().max(1000).optional().nullable(),
   fileName: z.string().trim().min(1).max(255),
   mimeType: z.string().trim().min(1).max(120),
   sizeInBytes: z.coerce.number().int().min(1).max(25 * 1024 * 1024),
@@ -428,6 +430,16 @@ function mapAuditActionDetails(action, entityType, metadata) {
   }
 
   if (action === 'LEAD_UPDATE') {
+    if (
+      metadata?.previousStatus === 'Perdido' &&
+      metadata?.nextStatus &&
+      metadata?.nextStatus !== 'Perdido'
+    ) {
+      return {
+        title: 'Retorno de perda',
+        description: `Retornou o lead para ${metadata.nextStageName || metadata.nextStatus}.`,
+      };
+    }
     if (metadata?.previousStageName !== metadata?.nextStageName && metadata?.nextStageName) {
       return {
         title: 'Mudança de etapa',
@@ -523,8 +535,10 @@ function mapAuditActionDetails(action, entityType, metadata) {
 
   if (action === 'TICKET_ATTACHMENT_DELETE') {
     return {
-      title: 'Anexo removido',
-      description: metadata?.fileName ? `Removeu o arquivo ${metadata.fileName}.` : 'Anexo removido.',
+      title: 'Anexo movido para lixeira',
+      description: metadata?.fileName
+        ? `Moveu o arquivo ${metadata.fileName} para a lixeira.`
+        : 'Anexo movido para a lixeira.',
     };
   }
 
@@ -708,8 +722,8 @@ function buildTicketTimelineItem(ticket, auditLogs = []) {
     })),
     ...(ticket.attachments || []).map((attachment) => ({
       id: `ticket-attachment-${attachment.id}`,
-      title: 'Anexo',
-      description: attachment.fileName,
+      title: attachment.title || 'Anexo',
+      description: attachment.description || attachment.fileName,
       actor: attachment.uploadedBy?.name || null,
       sector,
       createdAt: attachment.createdAt,
@@ -1913,6 +1927,7 @@ ticketsRouter.get(
             null,
         },
         protocols: timelineItems,
+        groupedProtocols: protocols,
       },
     });
   },
@@ -2275,6 +2290,8 @@ ticketsRouter.post(
           data: {
             ticketId: ticket.id,
             uploadedById: request.auth.userId,
+            title: file.title || null,
+            description: file.description || null,
             fileName: file.fileName,
             mimeType: file.mimeType,
             sizeInBytes: file.sizeInBytes,
@@ -2303,6 +2320,8 @@ ticketsRouter.post(
     response.status(201).json({
       items: created.map((attachment) => ({
         id: attachment.id,
+        title: attachment.title || null,
+        description: attachment.description || null,
         fileName: attachment.fileName,
         mimeType: attachment.mimeType,
         sizeInBytes: attachment.sizeInBytes,
@@ -2324,6 +2343,9 @@ ticketsRouter.get(
       where: {
         id: request.params.attachmentId,
         ticketId: request.params.id,
+      },
+      include: {
+        uploadedBy: true,
       },
     });
 
@@ -2361,8 +2383,34 @@ ticketsRouter.delete(
       throw new HttpError(404, 'Anexo não encontrado');
     }
 
-    await prisma.ticketAttachment.delete({
-      where: { id: attachment.id },
+    await prisma.$transaction(async (tx) => {
+      await moveEntityToTrash({
+        tx,
+        moduleKey: 'CLIENTES',
+        entityType: 'TicketAttachment',
+        entityId: attachment.id,
+        label: attachment.title || attachment.fileName,
+        payload: {
+          attachment: {
+            id: attachment.id,
+            ticketId: attachment.ticketId,
+            uploadedById: attachment.uploadedById,
+            title: attachment.title || null,
+            description: attachment.description || null,
+            fileName: attachment.fileName,
+            mimeType: attachment.mimeType,
+            sizeInBytes: attachment.sizeInBytes,
+            contentBase64: attachment.contentBase64,
+            createdAt: attachment.createdAt,
+            updatedAt: attachment.updatedAt,
+          },
+        },
+        deletedById: request.auth.userId,
+      });
+
+      await tx.ticketAttachment.delete({
+        where: { id: attachment.id },
+      });
     });
 
     await writeAuditLog({

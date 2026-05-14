@@ -124,6 +124,8 @@ function serializeTicketReference(ticket) {
     attachments:
       ticket.attachments?.map((attachment) => ({
         id: attachment.id,
+        title: attachment.title || null,
+        description: attachment.description || null,
         fileName: attachment.fileName,
         mimeType: attachment.mimeType,
         sizeInBytes: attachment.sizeInBytes,
@@ -274,6 +276,8 @@ export function serializeTicket(ticket) {
     })),
     attachments: attachments?.map((attachment) => ({
       id: attachment.id,
+      title: attachment.title || null,
+      description: attachment.description || null,
       fileName: attachment.fileName,
       mimeType: attachment.mimeType,
       sizeInBytes: attachment.sizeInBytes,

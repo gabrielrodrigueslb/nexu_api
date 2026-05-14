@@ -43,7 +43,7 @@ const envSchema = z.object({
     .string()
     .min(32, "JWT_ACCESS_SECRET deve ter ao menos 32 caracteres")
     .default("desenvolvimento-apenas-troque-esta-chave-por-uma-chave-real-segura"),
-  ACCESS_TOKEN_TTL: z.string().min(2).default("15m"),
+  ACCESS_TOKEN_TTL: z.string().min(2).default("2h"),
   REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(30).default(7),
   RATE_LIMIT_WINDOW_MS: z.coerce.number().int().min(60000).default(15 * 60 * 1000),
   RATE_LIMIT_MAX: z.coerce.number().int().min(10).default(200),
