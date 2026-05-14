@@ -2,6 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 
 import { writeAuditLog } from "../lib/audit.js";
+import { fetchPublicCnpjRecord, formatCnpjDigits, normalizeCnpjDigits } from "../lib/cnpj.js";
 import { resolveLeadWorkflow } from "../lib/crm-funnels.js";
 import { LEAD_TASK_TYPES } from "../lib/constants.js";
 import { HttpError } from "../lib/http-error.js";
@@ -90,6 +91,10 @@ const listLeadsQuerySchema = paginationSchema.extend({
 });
 
 const leadAutofillLookupQuerySchema = z.object({
+  cnpj: z.string().trim().min(8).max(24),
+});
+
+const leadCnpjValidationQuerySchema = z.object({
   cnpj: z.string().trim().min(8).max(24),
 });
 
@@ -401,6 +406,94 @@ leadsRouter.get(
 );
 
 leadsRouter.get(
+  "/lookup/validate-cnpj",
+  requireModuleAccess("COMMERCIAL", "view"),
+  validate({ query: leadCnpjValidationQuerySchema }),
+  async (request, response) => {
+    const normalizedCnpj = normalizeCnpjDigits(request.query.cnpj);
+
+    if (normalizedCnpj.length !== 14) {
+      response.json({
+        item: {
+          isValid: false,
+          isOfficiallyFound: false,
+          normalizedCnpj,
+          companyName: null,
+          legalName: null,
+          status: "invalid",
+          message: "CNPJ inválido. Confira os 14 dígitos informados.",
+        },
+      });
+      return;
+    }
+
+    const result = await fetchPublicCnpjRecord(normalizedCnpj);
+    const formattedCnpj = formatCnpjDigits(normalizedCnpj);
+
+    if (result.status === "invalid") {
+      response.json({
+        item: {
+          isValid: false,
+          isOfficiallyFound: false,
+          normalizedCnpj,
+          companyName: null,
+          legalName: null,
+          status: "invalid",
+          message: `CNPJ ${formattedCnpj} inválido.`,
+        },
+      });
+      return;
+    }
+
+    if (result.status === "found") {
+      response.json({
+        item: {
+          isValid: true,
+          isOfficiallyFound: true,
+          normalizedCnpj,
+          companyName: result.companyName,
+          legalName: result.legalName,
+          status: "found",
+          message: result.companyName
+            ? `CNPJ válido. Cadastro público localizado para ${result.companyName}.`
+            : "CNPJ válido e localizado na base pública.",
+        },
+      });
+      return;
+    }
+
+    if (result.status === "not_found") {
+      response.json({
+        item: {
+          isValid: true,
+          isOfficiallyFound: false,
+          normalizedCnpj,
+          companyName: null,
+          legalName: null,
+          status: "not_found",
+          message:
+            `CNPJ ${formattedCnpj} passou na validação, mas não foi localizado na base pública.`,
+        },
+      });
+      return;
+    }
+
+    response.json({
+      item: {
+        isValid: true,
+        isOfficiallyFound: false,
+        normalizedCnpj,
+        companyName: null,
+        legalName: null,
+        status: "unavailable",
+        message:
+          "CNPJ válido pelo dígito verificador. A consulta pública está indisponível no momento.",
+      },
+    });
+  },
+);
+
+leadsRouter.get(
   "/lookup/by-cnpj",
   requireModuleAccess("COMMERCIAL", "view"),
   validate({ query: leadAutofillLookupQuerySchema }),
@@ -640,6 +733,9 @@ leadsRouter.patch(
       where: { id: request.params.id },
       include: {
         ticket: true,
+        stage: true,
+        funnel: true,
+        seller: true,
       },
     });
 
@@ -779,7 +875,23 @@ leadsRouter.patch(
       entityId: lead.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
-      metadata: request.body,
+      metadata: {
+        changes: request.body,
+        previousStatus: existingLead.status,
+        nextStatus: lead.status,
+        previousStageId: existingLead.stageId || null,
+        nextStageId: lead.stageId || null,
+        previousStageName: existingLead.stage?.name || null,
+        nextStageName: lead.stage?.name || null,
+        previousFunnelId: existingLead.funnelId || null,
+        nextFunnelId: lead.funnelId || null,
+        previousFunnelName: existingLead.funnel?.name || null,
+        nextFunnelName: lead.funnel?.name || null,
+        previousSellerId: existingLead.sellerId || null,
+        nextSellerId: lead.sellerId || null,
+        previousSellerName: existingLead.seller?.name || null,
+        nextSellerName: lead.seller?.name || null,
+      },
     });
 
   response.json({ item: serializeLead(lead) });
@@ -832,6 +944,12 @@ leadsRouter.post(
       entityId: lead.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
+      metadata: {
+        ticketId: lead.ticket?.id || null,
+        ticketCode: lead.ticket?.code || null,
+        previousStatus: lead.status,
+        nextStatus: lead.ticket?.status || null,
+      },
     });
 
     response.json({ item: serializeLead(lead) });
@@ -960,7 +1078,7 @@ leadsRouter.post(
       entityId: task.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
-      metadata: { leadId: lead.id },
+      metadata: { leadId: lead.id, taskTitle: task.title },
     });
 
     response.status(201).json({ item: task });

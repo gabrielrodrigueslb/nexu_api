@@ -148,6 +148,24 @@ const listTicketsQuerySchema = paginationSchema.extend({
   to: z.string().datetime().optional(),
 });
 
+const clientTimelineQuerySchema = z
+  .object({
+    leadId: cuidSchema.optional(),
+    ticketId: cuidSchema.optional(),
+    cnpj: z.string().trim().optional(),
+    company: z.string().trim().optional(),
+  })
+  .refine(
+    (value) =>
+      Boolean(
+        value.leadId || value.ticketId || String(value.cnpj || '').trim() || String(value.company || '').trim(),
+      ),
+    {
+      message: 'Informe ao menos um identificador do cliente',
+      path: ['leadId'],
+    },
+  );
+
 const ticketInclude = {
   createdBy: true,
   assignee: true,
@@ -373,6 +391,482 @@ async function ensureSharedTicketAccess(request, requiredAccessLevel = 'view') {
   if (!hasAccess) {
     throw new HttpError(403, 'Sem permissão para acessar este ticket');
   }
+}
+
+function buildLeadHistoryWhere(identity) {
+  if (identity.cnpj) {
+    return { cnpj: identity.cnpj };
+  }
+
+  if (identity.company) {
+    return { company: identity.company };
+  }
+
+  return identity.leadId ? { id: identity.leadId } : null;
+}
+
+function safeJsonParse(value, fallback) {
+  if (!value) return fallback;
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function mapAuditActionDetails(action, entityType, metadata) {
+  if (action === 'LEAD_CREATE') {
+    return { title: 'Lead criado', description: 'Lead criado no CRM.' };
+  }
+
+  if (action === 'LEAD_REQUEST_PAYMENT') {
+    return {
+      title: 'Solicitação de pagamento',
+      description: 'Pagamento solicitado para o Financeiro.',
+    };
+  }
+
+  if (action === 'LEAD_UPDATE') {
+    if (metadata?.previousStageName !== metadata?.nextStageName && metadata?.nextStageName) {
+      return {
+        title: 'Mudança de etapa',
+        description: `Moveu o lead para ${metadata.nextStageName}.`,
+      };
+    }
+
+    if (metadata?.previousStatus !== metadata?.nextStatus && metadata?.nextStatus) {
+      return {
+        title: 'Mudança de status',
+        description: `Atualizou o lead para ${metadata.nextStatus}.`,
+      };
+    }
+
+    if (metadata?.previousSellerName !== metadata?.nextSellerName && metadata?.nextSellerName) {
+      return {
+        title: 'Responsável alterado',
+        description: `Lead agora está com ${metadata.nextSellerName}.`,
+      };
+    }
+
+    return {
+      title: 'Atualização do lead',
+      description: 'Dados do lead foram atualizados.',
+    };
+  }
+
+  if (action === 'COMMERCIAL_TICKET_PAYMENT_CONFIRM') {
+    return {
+      title: 'Pagamento confirmado',
+      description: 'Cobrança gerada pelo Financeiro.',
+    };
+  }
+
+  if (action === 'COMMERCIAL_TICKET_IMPLEMENTATION_APPROVE') {
+    return {
+      title: 'Liberação para implantação',
+      description: 'Cliente liberado para Implantação.',
+    };
+  }
+
+  if (action === 'COMMERCIAL_TICKET_UPDATE' || action === 'TICKET_UPDATE') {
+    if (metadata?.previousStatus !== metadata?.nextStatus && metadata?.nextStatus) {
+      return {
+        title: 'Mudança de status',
+        description: `Moveu o ticket para ${metadata.nextStatus}.`,
+      };
+    }
+
+    if (metadata?.previousCsStatus !== metadata?.nextCsStatus && metadata?.nextCsStatus) {
+      return {
+        title: 'Mudança de etapa CS',
+        description: `Moveu o ticket para ${metadata.nextCsStatus}.`,
+      };
+    }
+
+    if (
+      metadata?.previousTechnicalAssigneeName !== metadata?.nextTechnicalAssigneeName &&
+      metadata?.nextTechnicalAssigneeName
+    ) {
+      return {
+        title: 'Responsável técnico alterado',
+        description: `Ticket agora está com ${metadata.nextTechnicalAssigneeName}.`,
+      };
+    }
+
+    return {
+      title: 'Atualização do ticket',
+      description: 'Dados do ticket foram atualizados.',
+    };
+  }
+
+  if (action === 'TICKET_CREATE') {
+    return { title: 'Ticket criado', description: 'Ticket criado.' };
+  }
+
+  if (action === 'TICKET_COMMENT_CREATE' || action === 'COMMERCIAL_TICKET_COMMENT_CREATE') {
+    return {
+      title: 'Comentário registrado',
+      description: 'Comentário registrado.',
+    };
+  }
+
+  if (action === 'TICKET_ATTACHMENT_CREATE') {
+    const fileNames = Array.isArray(metadata?.fileNames) ? metadata.fileNames : [];
+    return {
+      title: fileNames.length > 1 ? 'Anexos adicionados' : 'Anexo adicionado',
+      description: fileNames.length
+        ? `Arquivos enviados: ${fileNames.join(', ')}.`
+        : 'Anexo adicionado.',
+    };
+  }
+
+  if (action === 'TICKET_ATTACHMENT_DELETE') {
+    return {
+      title: 'Anexo removido',
+      description: metadata?.fileName ? `Removeu o arquivo ${metadata.fileName}.` : 'Anexo removido.',
+    };
+  }
+
+  if (action === 'TICKET_TASK_CREATE' || action === 'LEAD_TASK_CREATE') {
+    return {
+      title: 'Tarefa criada',
+      description: metadata?.taskTitle || 'Nova tarefa registrada.',
+    };
+  }
+
+  if (action === 'LEAD_COMMENT_CREATE') {
+    return {
+      title: 'Comentário registrado',
+      description: 'Comentário registrado.',
+    };
+  }
+
+  if (entityType === 'DevTicket' && action?.includes('UPDATE')) {
+    return {
+      title: 'Atualização do ticket de desenvolvimento',
+      description: 'Ticket de desenvolvimento atualizado.',
+    };
+  }
+
+  if (entityType === 'DevTicket' && action?.includes('CREATE')) {
+    return {
+      title: 'Ticket de desenvolvimento criado',
+      description: 'Ticket de desenvolvimento criado.',
+    };
+  }
+
+  return null;
+}
+
+function mapAuditActionLabel(action, entityType, metadata) {
+  if (action === 'LEAD_CREATE') return 'Lead criado no CRM.';
+  if (action === 'LEAD_REQUEST_PAYMENT') return 'Pagamento solicitado para o Financeiro.';
+  if (action === 'LEAD_UPDATE') return 'Lead atualizado.';
+  if (action === 'COMMERCIAL_TICKET_PAYMENT_CONFIRM') return 'Cobrança gerada pelo Financeiro.';
+  if (action === 'COMMERCIAL_TICKET_IMPLEMENTATION_APPROVE') return 'Cliente liberado para Implantação.';
+  if (action === 'COMMERCIAL_TICKET_UPDATE' || action === 'TICKET_UPDATE') return 'Ticket atualizado.';
+  if (action === 'TICKET_CREATE') return 'Ticket criado.';
+  if (action === 'TICKET_COMMENT_CREATE') return 'Comentário registrado.';
+  if (action === 'TICKET_ATTACHMENT_CREATE') {
+    const fileNames = Array.isArray(metadata?.fileNames) ? metadata.fileNames : [];
+    return fileNames.length ? `Anexos adicionados: ${fileNames.join(', ')}.` : 'Anexo adicionado.';
+  }
+  if (action === 'TICKET_ATTACHMENT_DELETE') {
+    return metadata?.fileName ? `Anexo removido: ${metadata.fileName}.` : 'Anexo removido.';
+  }
+  if (action === 'TICKET_TASK_CREATE') return 'Tarefa criada.';
+  if (action === 'LEAD_COMMENT_CREATE') return 'Comentário registrado.';
+  if (action === 'LEAD_TASK_CREATE') return 'Tarefa criada.';
+  if (entityType === 'DevTicket' && action?.includes('UPDATE')) return 'Ticket de desenvolvimento atualizado.';
+  if (entityType === 'DevTicket' && action?.includes('CREATE')) return 'Ticket de desenvolvimento criado.';
+  return null;
+}
+
+function buildLeadTimelineItem(lead, auditLogs = []) {
+  const events = [
+    {
+      id: `lead-created-${lead.id}`,
+      title: 'Lead criado',
+      description: `Lead aberto em ${lead.status}.`,
+      actor: lead.createdBy?.name || lead.seller?.name || null,
+      sector: 'Comercial',
+      createdAt: lead.createdAt,
+    },
+    ...(lead.wonAt
+      ? [
+          {
+            id: `lead-won-${lead.id}`,
+            title: 'Lead ganho',
+            description: 'Negociação marcada como ganho.',
+            actor: lead.seller?.name || null,
+            sector: 'Comercial',
+            createdAt: lead.wonAt,
+          },
+        ]
+      : []),
+    ...(lead.lostAt
+      ? [
+          {
+            id: `lead-lost-${lead.id}`,
+            title: 'Lead perdido',
+            description: lead.lossReason || 'Negociação encerrada como perda.',
+            actor: lead.seller?.name || null,
+            sector: 'Comercial',
+            createdAt: lead.lostAt,
+          },
+        ]
+      : []),
+    ...(lead.comments || []).map((comment) => ({
+      id: `lead-comment-${comment.id}`,
+      title: 'Comentário',
+      description: comment.message,
+      actor: comment.author?.name || null,
+      sector: 'Comercial',
+      createdAt: comment.createdAt,
+    })),
+    ...(lead.tasks || []).map((task) => ({
+      id: `lead-task-${task.id}`,
+      title: task.done ? 'Tarefa concluída' : 'Tarefa registrada',
+      description: task.title,
+      actor: null,
+      sector: 'Comercial',
+      createdAt: task.createdAt,
+    })),
+    ...auditLogs
+      .map((log) => {
+        const metadata = safeJsonParse(log.metadata, null);
+        const details = mapAuditActionDetails(log.action, log.entityType, metadata);
+        if (!details || log.action === 'LEAD_CREATE') return null;
+        return {
+          id: `lead-audit-${log.id}`,
+          title: details.title,
+          description: details.description,
+          actor: log.actor?.name || null,
+          sector: 'Comercial',
+          createdAt: log.createdAt,
+        };
+      })
+      .filter(Boolean),
+  ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  return {
+    id: `lead-${lead.id}`,
+    protocol: null,
+    entityType: 'lead',
+    entityId: lead.id,
+    sector: 'Comercial',
+    title: lead.company,
+    status: lead.status,
+    createdAt: lead.createdAt,
+    updatedAt: lead.updatedAt,
+    instance: lead.ticket?.instance || null,
+    owner: lead.seller?.name || null,
+    summary: lead.cnpj || lead.contact || null,
+    events,
+  };
+}
+
+function inferTicketSector(ticket) {
+  if (ticket.status === 'pendente_financeiro' || ticket.status === 'pagamento_confirmado') {
+    return 'Financeiro';
+  }
+
+  if (ticket.status === 'em_implantacao' || ticket.status === 'concluido') {
+    return 'Implantação';
+  }
+
+  return 'Comercial';
+}
+
+function buildTicketTimelineItem(ticket, auditLogs = []) {
+  const sector = inferTicketSector(ticket);
+  const events = [
+    {
+      id: `ticket-created-${ticket.id}`,
+      title: 'Ticket criado',
+      description: `Protocolo ${ticket.code} aberto em ${sector}.`,
+      actor: ticket.createdBy?.name || ticket.assignee?.name || null,
+      sector,
+      createdAt: ticket.createdAt,
+    },
+    ...(ticket.comments || []).map((comment) => ({
+      id: `ticket-comment-${comment.id}`,
+      title: 'Comentário',
+      description: comment.message,
+      actor: comment.author?.name || null,
+      sector,
+      createdAt: comment.createdAt,
+    })),
+    ...(ticket.tasks || []).map((task) => ({
+      id: `ticket-task-${task.id}`,
+      title: task.done ? 'Tarefa concluída' : 'Tarefa registrada',
+      description: task.title,
+      actor: task.assignee?.name || null,
+      sector,
+      createdAt: task.createdAt,
+    })),
+    ...(ticket.attachments || []).map((attachment) => ({
+      id: `ticket-attachment-${attachment.id}`,
+      title: 'Anexo',
+      description: attachment.fileName,
+      actor: attachment.uploadedBy?.name || null,
+      sector,
+      createdAt: attachment.createdAt,
+    })),
+    ...auditLogs
+      .map((log) => {
+        const metadata = safeJsonParse(log.metadata, null);
+        const details = mapAuditActionDetails(log.action, log.entityType, metadata);
+        if (!details || log.action === 'TICKET_CREATE') return null;
+        return {
+          id: `ticket-audit-${log.id}`,
+          title: details.title,
+          description: details.description,
+          actor: log.actor?.name || null,
+          sector,
+          createdAt: log.createdAt,
+        };
+      })
+      .filter(Boolean),
+    ...(ticket.completedAt
+      ? [
+          {
+            id: `ticket-complete-${ticket.id}`,
+            title: 'Fluxo concluído',
+            description: 'Ticket concluído.',
+            actor: ticket.technicalAssignee?.name || ticket.assignee?.name || null,
+            sector,
+            createdAt: ticket.completedAt,
+          },
+        ]
+      : []),
+    ...(ticket.canceledAt
+      ? [
+          {
+            id: `ticket-cancel-${ticket.id}`,
+            title: 'Ticket cancelado',
+            description: ticket.cancelReason || 'Fluxo cancelado.',
+            actor: ticket.assignee?.name || null,
+            sector,
+            createdAt: ticket.canceledAt,
+          },
+        ]
+      : []),
+  ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  return {
+    id: `ticket-${ticket.id}`,
+    protocol: ticket.code,
+    entityType: 'ticket',
+    entityId: ticket.id,
+    sector,
+    title: ticket.company,
+    status: ticket.status,
+    createdAt: ticket.createdAt,
+    updatedAt: ticket.updatedAt,
+    instance: ticket.instance || null,
+    owner: ticket.assignee?.name || null,
+    summary: ticket.plan || null,
+    events,
+  };
+}
+
+function buildDevTicketTimelineItem(ticket, auditLogs = []) {
+  const historyEntries = safeJsonParse(ticket.historyJson, []);
+  const events = [
+    {
+      id: `dev-created-${ticket.id}`,
+      title: 'Ticket de desenvolvimento criado',
+      description: ticket.title,
+      actor: ticket.createdBy?.name || null,
+      sector: 'Desenvolvimento',
+      createdAt: ticket.createdAt,
+    },
+    ...historyEntries.map((entry, index) => ({
+      id: `dev-history-${ticket.id}-${index}`,
+      title: entry.label || 'Etapa registrada',
+      description: entry.description || entry.message || ticket.devStatus,
+      actor: entry.actor || null,
+      sector: 'Desenvolvimento',
+      createdAt: entry.createdAt || ticket.updatedAt,
+    })),
+    ...(ticket.comments || []).map((comment) => ({
+      id: `dev-comment-${comment.id}`,
+      title: 'Comentário',
+      description: comment.message,
+      actor: comment.author?.name || null,
+      sector: 'Desenvolvimento',
+      createdAt: comment.createdAt,
+    })),
+    ...auditLogs
+      .map((log) => {
+        const metadata = safeJsonParse(log.metadata, null);
+        const details = mapAuditActionDetails(log.action, log.entityType, metadata);
+        if (!details || log.action?.includes('CREATE')) return null;
+        return {
+          id: `dev-audit-${log.id}`,
+          title: details.title,
+          description: details.description,
+          actor: log.actor?.name || null,
+          sector: 'Desenvolvimento',
+          createdAt: log.createdAt,
+        };
+      })
+      .filter(Boolean),
+    ...(ticket.resolvedAt
+      ? [
+          {
+            id: `dev-resolved-${ticket.id}`,
+            title: 'Ticket resolvido',
+            description: ticket.title,
+            actor: ticket.assignee?.name || null,
+            sector: 'Desenvolvimento',
+            createdAt: ticket.resolvedAt,
+          },
+        ]
+      : []),
+  ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  return {
+    id: `dev-${ticket.id}`,
+    protocol: ticket.proto,
+    entityType: 'devTicket',
+    entityId: String(ticket.id),
+    sector: 'Desenvolvimento',
+    title: ticket.clientName || ticket.title,
+    status: ticket.devStatus,
+    createdAt: ticket.createdAt,
+    updatedAt: ticket.updatedAt,
+    instance: ticket.instance || null,
+    owner: ticket.assignee?.name || null,
+    summary: ticket.category || null,
+    events,
+  };
+}
+
+function flattenClientTimelineProtocols(protocols = []) {
+  return protocols
+    .flatMap((protocol) => {
+      const events = Array.isArray(protocol.events) ? protocol.events : [];
+
+      return events.map((event) => ({
+        id: `${protocol.id}-${event.id}`,
+        protocol: protocol.protocol || null,
+        entityType: protocol.entityType,
+        entityId: protocol.entityId,
+        type: protocol.entityType,
+        sector: event.sector || protocol.sector || 'Comercial',
+        title: event.title || protocol.title || 'Ação registrada',
+        description: [protocol.protocol, event.description]
+          .filter(Boolean)
+          .join(' • '),
+        userName: event.actor || protocol.owner || null,
+        createdAt: event.createdAt || protocol.createdAt,
+        status: protocol.status || null,
+      }));
+    })
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 }
 
 ticketsRouter.get(
@@ -807,6 +1301,7 @@ ticketsRouter.patch(
       where: { id: request.params.id },
       include: {
         lead: true,
+        technicalAssignee: true,
       },
     });
 
@@ -1080,7 +1575,17 @@ ticketsRouter.patch(
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
-      metadata: request.body,
+      metadata: {
+        changes: request.body,
+        previousStatus: existingTicket.status,
+        nextStatus: ticket.status,
+        previousCsStatus: existingTicket.csStatus || null,
+        nextCsStatus: ticket.csStatus || null,
+        previousTechnicalAssigneeId: existingTicket.technicalAssigneeId || null,
+        nextTechnicalAssigneeId: ticket.technicalAssigneeId || null,
+        previousTechnicalAssigneeName: existingTicket.technicalAssignee?.name || null,
+        nextTechnicalAssigneeName: ticket.technicalAssignee?.name || null,
+      },
     });
 
     response.json({ item: serializeTicket(ticket) });
@@ -1126,6 +1631,10 @@ ticketsRouter.patch(
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
+      metadata: {
+        previousStatus: existingTicket.status,
+        nextStatus: ticket.status,
+      },
     });
 
     response.json({ item: serializeTicket(ticket) });
@@ -1178,6 +1687,10 @@ ticketsRouter.patch(
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
+      metadata: {
+        previousStatus: existingTicket.status,
+        nextStatus: ticket.status,
+      },
     });
 
     response.json({ item: serializeTicket(ticket) });
@@ -1222,6 +1735,186 @@ ticketsRouter.post(
     });
 
     response.status(201).json({ item: comment });
+  },
+);
+
+ticketsRouter.get(
+  '/client-timeline',
+  validate({ query: clientTimelineQuerySchema }),
+  async (request, response) => {
+    await ensureSharedTicketAccess(request, 'view');
+
+    const identity = {
+      leadId: request.query.leadId || null,
+      ticketId: request.query.ticketId || null,
+      cnpj: request.query.cnpj ? String(request.query.cnpj).trim() : null,
+      company: request.query.company ? String(request.query.company).trim() : null,
+    };
+
+    const [leadAnchor, ticketAnchor] = await Promise.all([
+      identity.leadId
+        ? prisma.lead.findUnique({
+            where: { id: identity.leadId },
+            select: {
+              id: true,
+              company: true,
+              cnpj: true,
+            },
+          })
+        : Promise.resolve(null),
+      identity.ticketId
+        ? prisma.ticket.findUnique({
+            where: { id: identity.ticketId },
+            select: {
+              id: true,
+              company: true,
+              cnpj: true,
+              instance: true,
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const normalizedIdentity = {
+      leadId: identity.leadId || leadAnchor?.id || null,
+      ticketId: identity.ticketId || ticketAnchor?.id || null,
+      cnpj: identity.cnpj || ticketAnchor?.cnpj || leadAnchor?.cnpj || null,
+      company: identity.company || ticketAnchor?.company || leadAnchor?.company || null,
+      instance: ticketAnchor?.instance || null,
+    };
+
+    const ticketWhere = normalizedIdentity.cnpj
+      ? {
+          OR: [{ cnpj: normalizedIdentity.cnpj }, { lead: { cnpj: normalizedIdentity.cnpj } }],
+        }
+      : normalizedIdentity.company
+        ? {
+            OR: [{ company: normalizedIdentity.company }, { lead: { company: normalizedIdentity.company } }],
+          }
+        : normalizedIdentity.ticketId
+          ? { id: normalizedIdentity.ticketId }
+          : normalizedIdentity.leadId
+            ? { leadId: normalizedIdentity.leadId }
+            : { id: '__none__' };
+
+    const leadWhere = buildLeadHistoryWhere(normalizedIdentity);
+    const devWhere = normalizedIdentity.cnpj
+      ? {
+          OR: [{ cnpj: normalizedIdentity.cnpj }, ...(normalizedIdentity.company ? [{ clientName: normalizedIdentity.company }] : [])],
+        }
+      : normalizedIdentity.company
+        ? { clientName: normalizedIdentity.company }
+        : null;
+
+    const [relatedLeads, relatedTickets, relatedDevTickets] = await Promise.all([
+      leadWhere
+        ? prisma.lead.findMany({
+            where: leadWhere,
+            include: {
+              createdBy: true,
+              seller: true,
+              ticket: {
+                select: {
+                  id: true,
+                  code: true,
+                  status: true,
+                  type: true,
+                  instance: true,
+                  createdAt: true,
+                  updatedAt: true,
+                },
+              },
+              comments: {
+                include: {
+                  author: true,
+                },
+                orderBy: { createdAt: 'desc' },
+              },
+              tasks: {
+                orderBy: { createdAt: 'asc' },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          })
+        : Promise.resolve([]),
+      prisma.ticket.findMany({
+        where: ticketWhere,
+        include: ticketInclude,
+        orderBy: { createdAt: 'desc' },
+      }),
+      devWhere
+        ? prisma.devTicket.findMany({
+            where: devWhere,
+            include: {
+              createdBy: true,
+              assignee: true,
+              comments: {
+                include: {
+                  author: true,
+                },
+                orderBy: { createdAt: 'desc' },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const leadIds = relatedLeads.map((item) => item.id);
+    const ticketIds = relatedTickets.map((item) => item.id);
+    const devIds = relatedDevTickets.map((item) => String(item.id));
+
+    const auditLogs =
+      leadIds.length || ticketIds.length || devIds.length
+        ? await prisma.auditLog.findMany({
+            where: {
+              OR: [
+                ...(leadIds.length ? [{ entityType: 'Lead', entityId: { in: leadIds } }] : []),
+                ...(ticketIds.length ? [{ entityType: 'Ticket', entityId: { in: ticketIds } }] : []),
+                ...(devIds.length ? [{ entityType: 'DevTicket', entityId: { in: devIds } }] : []),
+              ],
+            },
+            include: {
+              actor: true,
+            },
+            orderBy: { createdAt: 'asc' },
+          })
+        : [];
+
+    const auditsByKey = auditLogs.reduce((acc, log) => {
+      const key = `${log.entityType}:${log.entityId}`;
+      acc[key] = acc[key] || [];
+      acc[key].push(log);
+      return acc;
+    }, {});
+
+    const protocols = [
+      ...relatedLeads.map((lead) =>
+        buildLeadTimelineItem(lead, auditsByKey[`Lead:${lead.id}`] || []),
+      ),
+      ...relatedTickets.map((ticket) =>
+        buildTicketTimelineItem(ticket, auditsByKey[`Ticket:${ticket.id}`] || []),
+      ),
+      ...relatedDevTickets.map((ticket) =>
+        buildDevTicketTimelineItem(ticket, auditsByKey[`DevTicket:${ticket.id}`] || []),
+      ),
+    ].sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+    const timelineItems = flattenClientTimelineProtocols(protocols);
+
+    response.json({
+      item: {
+        client: {
+          company: normalizedIdentity.company,
+          cnpj: normalizedIdentity.cnpj,
+          instance:
+            normalizedIdentity.instance ||
+            relatedTickets.map((ticket) => ticket.instance).find(Boolean) ||
+            relatedDevTickets.map((ticket) => ticket.instance).find(Boolean) ||
+            null,
+        },
+        protocols: timelineItems,
+      },
+    });
   },
 );
 
@@ -1364,6 +2057,7 @@ ticketsRouter.patch(
       where: { id: request.params.id },
       include: {
         lead: true,
+        technicalAssignee: true,
       },
     });
 
@@ -1458,7 +2152,17 @@ ticketsRouter.patch(
       entityId: ticket.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
-      metadata: request.body,
+      metadata: {
+        changes: request.body,
+        previousStatus: existingTicket.status,
+        nextStatus: ticket.status,
+        previousCsStatus: existingTicket.csStatus || null,
+        nextCsStatus: ticket.csStatus || null,
+        previousTechnicalAssigneeId: existingTicket.technicalAssigneeId || null,
+        nextTechnicalAssigneeId: ticket.technicalAssigneeId || null,
+        previousTechnicalAssigneeName: existingTicket.technicalAssignee?.name || null,
+        nextTechnicalAssigneeName: ticket.technicalAssignee?.name || null,
+      },
     });
 
     response.json({ item: serializeTicket(ticket) });
@@ -1714,7 +2418,7 @@ ticketsRouter.post(
       entityId: task.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
-      metadata: { ticketId: ticket.id },
+      metadata: { ticketId: ticket.id, taskTitle: task.title },
     });
 
     response.status(201).json({ item: task });

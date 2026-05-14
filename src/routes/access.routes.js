@@ -19,6 +19,7 @@ import { HttpError } from "../lib/http-error.js";
 import { prisma } from "../lib/prisma.js";
 import { cuidSchema } from "../lib/schemas.js";
 import { slugify } from "../lib/text.js";
+import { moveEntityToTrash } from "../lib/trash.js";
 import { authenticate } from "../middlewares/authenticate.js";
 import { authorize } from "../middlewares/authorize.js";
 import { validate } from "../middlewares/validate.js";
@@ -234,6 +235,46 @@ accessRouter.patch(
     });
 
     response.json({ item });
+  },
+);
+
+accessRouter.delete(
+  "/sectors/:id",
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    const current = await prisma.sector.findUnique({ where: { id: request.params.id } });
+    if (!current) {
+      throw new HttpError(404, "Setor nao encontrado");
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await moveEntityToTrash({
+        tx,
+        moduleKey: "USUARIOS",
+        entityType: "Sector",
+        entityId: current.id,
+        label: current.name,
+        payload: current,
+        deletedById: request.auth.userId,
+      });
+
+      await tx.sector.delete({
+        where: { id: current.id },
+      });
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "SECTOR_TRASH",
+      entityType: "Sector",
+      entityId: current.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.status(204).send();
   },
 );
 
@@ -609,6 +650,70 @@ accessRouter.patch(
     });
 
     response.json({ item });
+  },
+);
+
+accessRouter.delete(
+  "/presets/:id",
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    const current = await prisma.accessPreset.findUnique({
+      where: { id: request.params.id },
+      include: {
+        modulePermissions: true,
+        actionPermissions: true,
+        users: {
+          select: { id: true },
+        },
+      },
+    });
+
+    if (!current) {
+      throw new HttpError(404, "Preset nao encontrado");
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await moveEntityToTrash({
+        tx,
+        moduleKey: "USUARIOS",
+        entityType: "AccessPreset",
+        entityId: current.id,
+        label: current.name,
+        payload: {
+          preset: {
+            id: current.id,
+            name: current.name,
+            slug: current.slug,
+            description: current.description,
+            role: current.role,
+            isSystem: current.isSystem,
+            createdAt: current.createdAt,
+            updatedAt: current.updatedAt,
+          },
+          modulePermissions: current.modulePermissions,
+          actionPermissions: current.actionPermissions,
+          linkedUserIds: current.users.map((user) => user.id),
+        },
+        deletedById: request.auth.userId,
+      });
+
+      await tx.accessPreset.delete({
+        where: { id: current.id },
+      });
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "ACCESS_PRESET_TRASH",
+      entityType: "AccessPreset",
+      entityId: current.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.status(204).send();
   },
 );
 

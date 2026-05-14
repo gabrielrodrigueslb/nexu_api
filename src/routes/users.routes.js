@@ -10,6 +10,7 @@ import { hashPassword } from "../lib/password.js";
 import { prisma } from "../lib/prisma.js";
 import { cuidSchema, paginationSchema, passwordSchema } from "../lib/schemas.js";
 import { serializeUser } from "../lib/serializers.js";
+import { moveEntityToTrash } from "../lib/trash.js";
 import { normalizeEmail } from "../lib/text.js";
 import { authenticate } from "../middlewares/authenticate.js";
 import { authorize } from "../middlewares/authorize.js";
@@ -179,12 +180,22 @@ async function ensureUserActionsExist(actionPermissions = []) {
   }
 }
 
+async function getTrashedUserIds() {
+  const items = await prisma.trashItem.findMany({
+    where: { entityType: "User" },
+    select: { entityId: true },
+  });
+
+  return items.map((item) => item.entityId);
+}
+
 usersRouter.get(
   "/",
   authorize(["admin"]),
   validate({ query: listUsersQuerySchema }),
   async (request, response) => {
     const { page, limit, skip } = getPagination(request.query);
+    const trashedUserIds = await getTrashedUserIds();
     const where = {
       ...(request.query.q
         ? {
@@ -197,6 +208,7 @@ usersRouter.get(
       ...(request.query.role ? { role: request.query.role } : {}),
       ...(request.query.sector ? { sector: request.query.sector } : {}),
       ...(request.query.active !== undefined ? { isActive: request.query.active } : {}),
+      ...(trashedUserIds.length ? { id: { notIn: trashedUserIds } } : {}),
     };
 
     const [items, total] = await prisma.$transaction([
@@ -220,6 +232,7 @@ usersRouter.get(
   "/directory",
   validate({ query: userDirectoryQuerySchema }),
   async (request, response) => {
+    const trashedUserIds = await getTrashedUserIds();
     const where = {
       ...(request.query.q
         ? {
@@ -232,6 +245,7 @@ usersRouter.get(
       ...(request.query.role ? { role: request.query.role } : {}),
       ...(request.query.sector ? { sector: request.query.sector } : {}),
       ...(request.query.active !== undefined ? { isActive: request.query.active } : { isActive: true }),
+      ...(trashedUserIds.length ? { id: { notIn: trashedUserIds } } : {}),
     };
 
     const items = await prisma.user.findMany({
@@ -489,6 +503,105 @@ usersRouter.post(
       action: "USER_RESET_PASSWORD",
       entityType: "User",
       entityId: user.id,
+      ipAddress: response.locals.ipAddress,
+      userAgent: response.locals.userAgent,
+    });
+
+    response.status(204).send();
+  },
+);
+
+usersRouter.delete(
+  "/:id",
+  authorize(["admin"]),
+  validate({
+    params: z.object({ id: cuidSchema }),
+  }),
+  async (request, response) => {
+    if (request.params.id === request.auth.userId) {
+      throw new HttpError(422, "Nao e permitido enviar seu proprio usuario para a lixeira");
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { id: request.params.id },
+      include: {
+        modulePermissions: true,
+        actionPermissions: true,
+      },
+    });
+
+    if (!existingUser) {
+      throw new HttpError(404, "UsuÃ¡rio nÃ£o encontrado");
+    }
+
+    const existingTrash = await prisma.trashItem.findFirst({
+      where: {
+        entityType: "User",
+        entityId: existingUser.id,
+      },
+      select: { id: true },
+    });
+
+    if (existingTrash) {
+      throw new HttpError(409, "Este usuario ja esta na lixeira");
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await moveEntityToTrash({
+        tx,
+        moduleKey: "USUARIOS",
+        entityType: "User",
+        entityId: existingUser.id,
+        label: existingUser.name,
+        payload: {
+          user: {
+            id: existingUser.id,
+            name: existingUser.name,
+            email: existingUser.email,
+            passwordHash: existingUser.passwordHash,
+            role: existingUser.role,
+            sector: existingUser.sector,
+            accessPresetId: existingUser.accessPresetId,
+            isActive: existingUser.isActive,
+            failedLoginAttempts: existingUser.failedLoginAttempts,
+            lockedUntil: existingUser.lockedUntil,
+            sessionVersion: existingUser.sessionVersion,
+            lastLoginAt: existingUser.lastLoginAt,
+            createdAt: existingUser.createdAt,
+            updatedAt: existingUser.updatedAt,
+          },
+          modulePermissions: existingUser.modulePermissions,
+          actionPermissions: existingUser.actionPermissions,
+        },
+        deletedById: request.auth.userId,
+      });
+
+      await tx.user.update({
+        where: { id: existingUser.id },
+        data: {
+          isActive: false,
+          sessionVersion: { increment: 1 },
+          failedLoginAttempts: 0,
+          lockedUntil: null,
+        },
+      });
+
+      await tx.refreshToken.updateMany({
+        where: {
+          userId: existingUser.id,
+          revokedAt: null,
+        },
+        data: {
+          revokedAt: new Date(),
+        },
+      });
+    });
+
+    await writeAuditLog({
+      actorUserId: request.auth.userId,
+      action: "USER_TRASH",
+      entityType: "User",
+      entityId: existingUser.id,
       ipAddress: response.locals.ipAddress,
       userAgent: response.locals.userAgent,
     });

@@ -5,7 +5,12 @@ import { writeAuditLog } from "../lib/audit.js";
 import { HttpError } from "../lib/http-error.js";
 import { prisma } from "../lib/prisma.js";
 import { cuidSchema, paginationSchema } from "../lib/schemas.js";
-import { getTrashItemOrThrow, parseTrashPayload } from "../lib/trash.js";
+import {
+  getTrashExpiresAt,
+  getTrashItemOrThrow,
+  parseTrashPayload,
+  purgeExpiredTrashItems,
+} from "../lib/trash.js";
 import { authenticate } from "../middlewares/authenticate.js";
 import { requireModuleAccess } from "../middlewares/require-module-access.js";
 import { validate } from "../middlewares/validate.js";
@@ -27,11 +32,16 @@ function toTrashSummary(item) {
     label: item.label,
     deletedById: item.deletedById,
     deletedAt: item.deletedAt,
+    expiresAt: getTrashExpiresAt(item.deletedAt),
   };
 }
 
 async function ensureEntityDoesNotExist(tx, entityType, entityId) {
   const modelMap = {
+    User: tx.user,
+    Sector: tx.sector,
+    AccessPreset: tx.accessPreset,
+    Plan: tx.plan,
     CatalogItem: tx.catalogItem,
     Tag: tx.tag,
     Origin: tx.origin,
@@ -41,6 +51,10 @@ async function ensureEntityDoesNotExist(tx, entityType, entityId) {
   };
 
   const model = modelMap[entityType];
+
+  if (entityType === "User") {
+    return;
+  }
 
   if (!model) {
     throw new HttpError(422, "Tipo de item não suportado para restauração");
@@ -61,6 +75,88 @@ async function restoreTrashItem(tx, trashItem) {
   await ensureEntityDoesNotExist(tx, trashItem.entityType, trashItem.entityId);
 
   switch (trashItem.entityType) {
+    case "User": {
+      const accessPreset = payload.user?.accessPresetId
+        ? await tx.accessPreset.findUnique({
+            where: { id: payload.user.accessPresetId },
+            select: { id: true },
+          })
+        : null;
+
+      const existing = await tx.user.findUnique({
+        where: { id: payload.user.id },
+      });
+
+      const userData = {
+        ...payload.user,
+        accessPresetId: accessPreset?.id || null,
+        isActive: true,
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+      };
+
+      if (existing) {
+        await tx.user.update({
+          where: { id: payload.user.id },
+          data: userData,
+        });
+      } else {
+        await tx.user.create({
+          data: userData,
+        });
+      }
+
+      await tx.userModulePermission.deleteMany({
+        where: { userId: payload.user.id },
+      });
+
+      if (payload.modulePermissions?.length) {
+        await tx.userModulePermission.createMany({
+          data: payload.modulePermissions,
+        });
+      }
+
+      await tx.userActionPermission.deleteMany({
+        where: { userId: payload.user.id },
+      });
+
+      if (payload.actionPermissions?.length) {
+        await tx.userActionPermission.createMany({
+          data: payload.actionPermissions,
+        });
+      }
+      break;
+    }
+    case "Sector":
+      await tx.sector.create({ data: payload });
+      break;
+    case "AccessPreset":
+      await tx.accessPreset.create({
+        data: {
+          ...payload.preset,
+          modulePermissions: payload.modulePermissions?.length
+            ? { create: payload.modulePermissions }
+            : undefined,
+          actionPermissions: payload.actionPermissions?.length
+            ? { create: payload.actionPermissions }
+            : undefined,
+        },
+      });
+
+      if (payload.linkedUserIds?.length) {
+        await tx.user.updateMany({
+          where: {
+            id: { in: payload.linkedUserIds },
+          },
+          data: {
+            accessPresetId: payload.preset.id,
+          },
+        });
+      }
+      break;
+    case "Plan":
+      await tx.plan.create({ data: payload });
+      break;
     case "Tag":
       await tx.tag.create({ data: payload });
       break;
@@ -106,6 +202,8 @@ trashRouter.get(
   requireModuleAccess("LIXEIRA", "view"),
   validate({ query: listTrashQuerySchema }),
   async (request, response) => {
+    await purgeExpiredTrashItems();
+
     const page = Number(request.query.page || 1);
     const limit = Math.min(Math.max(Number(request.query.limit || 20), 1), 100);
     const skip = (page - 1) * limit;
