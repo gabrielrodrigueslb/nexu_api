@@ -69,6 +69,9 @@ const createLeadSchema = z.object({
   supervisors: z.coerce.number().int().min(0).optional(),
   admins: z.coerce.number().int().min(0).optional(),
   observations: z.string().trim().max(4000).optional().nullable(),
+  lossReasonId: cuidSchema.optional().nullable(),
+  lossReasonLabel: z.string().trim().max(160).optional().nullable(),
+  lossReasonNote: z.string().trim().max(1000).optional().nullable(),
   representativeId: cuidSchema.optional().nullable(),
   representativeCommission: z.coerce.number().min(0).optional(),
   passThroughAmount: z.coerce.number().min(0).optional(),
@@ -106,6 +109,7 @@ const leadInclude = {
   seller: true,
   sdr: true,
   origin: true,
+  lossReasonRef: true,
   indicator: true,
   plan: true,
   funnel: true,
@@ -280,6 +284,43 @@ function buildLeadSuggestionPayload(snapshot, extra = {}) {
     ...snapshot,
     label: snapshot.company || snapshot.cnpj || "Cliente",
     subtitle: extra.subtitle || snapshot.planName || null,
+  };
+}
+
+async function resolveLossReasonSelection(tx, input = {}) {
+  const legacyLossReason = typeof input.lossReason === "string" ? input.lossReason.trim() : "";
+  const lossReasonNote =
+    typeof input.lossReasonNote === "string"
+      ? input.lossReasonNote.trim()
+      : legacyLossReason;
+
+  if (!input.lossReasonId) {
+    return {
+      lossReasonId: null,
+      lossReasonLabel:
+        typeof input.lossReasonLabel === "string" && input.lossReasonLabel.trim()
+          ? input.lossReasonLabel.trim()
+          : legacyLossReason || null,
+      lossReasonNote: lossReasonNote || null,
+    };
+  }
+
+  const selectedLossReason = await tx.lossReason.findUnique({
+    where: { id: input.lossReasonId },
+  });
+
+  if (!selectedLossReason) {
+    throw new HttpError(404, "Motivo de perda nao encontrado");
+  }
+
+  if (input.funnelId && selectedLossReason.funnelId && selectedLossReason.funnelId !== input.funnelId) {
+    throw new HttpError(422, "Este motivo de perda nao pertence ao funil informado");
+  }
+
+  return {
+    lossReasonId: selectedLossReason.id,
+    lossReasonLabel: selectedLossReason.name,
+    lossReasonNote: lossReasonNote || null,
   };
 }
 
@@ -647,6 +688,10 @@ leadsRouter.post(
   async (request, response) => {
     const lead = await prisma.$transaction(async (tx) => {
       const workflow = await resolveLeadWorkflow(tx, request.body);
+      const selectedLossReason = await resolveLossReasonSelection(tx, {
+        ...request.body,
+        funnelId: workflow.funnelId,
+      });
       const createdLead = await tx.lead.create({
         data: {
           company: request.body.company,
@@ -674,6 +719,9 @@ leadsRouter.post(
             request.body.lostAt || workflow.status === "Perdido"
               ? new Date(request.body.lostAt || new Date().toISOString())
               : null,
+          lossReasonId: selectedLossReason.lossReasonId,
+          lossReasonLabel: selectedLossReason.lossReasonLabel,
+          lossReasonNote: selectedLossReason.lossReasonNote,
           createdById: request.auth.userId,
           tasks: request.body.tasks?.length
             ? {
@@ -759,7 +807,6 @@ leadsRouter.patch(
           representativeId: request.body.representativeId,
           representativeCommission: request.body.representativeCommission,
           passThroughAmount: request.body.passThroughAmount,
-          lossReason: request.body.lossReason,
         }).filter(([, value]) => value !== undefined),
       ),
     };
@@ -778,6 +825,33 @@ leadsRouter.patch(
               funnelId: existingLead.funnelId,
               stageId: existingLead.stageId,
             };
+      const selectedLossReason =
+        "lossReasonId" in request.body ||
+        "lossReasonLabel" in request.body ||
+        "lossReasonNote" in request.body ||
+        "lossReason" in request.body ||
+        nextStatus === "Perdido" ||
+        existingLead.status === "Perdido"
+          ? await resolveLossReasonSelection(tx, {
+              lossReasonId:
+                "lossReasonId" in request.body
+                  ? request.body.lossReasonId
+                  : existingLead.lossReasonId,
+              funnelId: workflow.funnelId,
+              lossReasonLabel:
+                "lossReasonLabel" in request.body
+                  ? request.body.lossReasonLabel
+                  : existingLead.lossReasonLabel,
+              lossReasonNote:
+                "lossReasonNote" in request.body
+                  ? request.body.lossReasonNote
+                  : existingLead.lossReasonNote,
+              lossReason:
+                "lossReason" in request.body
+                  ? request.body.lossReason
+                  : existingLead.lossReasonNote || existingLead.lossReasonLabel,
+            })
+          : null;
       const nextStatus = workflow.status;
       const updatedLead = await tx.lead.update({
         where: { id: request.params.id },
@@ -799,6 +873,21 @@ leadsRouter.patch(
           ...("originId" in request.body ? { originId: request.body.originId } : {}),
           ...("indicatorId" in request.body ? { indicatorId: request.body.indicatorId } : {}),
           notes: buildLeadMetadataNotes(nextMetadata),
+          ...(selectedLossReason
+            ? {
+                lossReasonId: nextStatus === "Perdido" ? selectedLossReason.lossReasonId : null,
+                lossReasonLabel:
+                  nextStatus === "Perdido" ? selectedLossReason.lossReasonLabel : null,
+                lossReasonNote:
+                  nextStatus === "Perdido" ? selectedLossReason.lossReasonNote : null,
+              }
+            : nextStatus !== "Perdido"
+              ? {
+                  lossReasonId: null,
+                  lossReasonLabel: null,
+                  lossReasonNote: null,
+                }
+              : {}),
           ...("wonAt" in request.body
             ? { wonAt: request.body.wonAt ? new Date(request.body.wonAt) : null }
             : nextStatus === "Ganho" && !existingLead.wonAt
@@ -997,6 +1086,9 @@ leadsRouter.delete(
             isLite: lead.isLite,
             wonAt: lead.wonAt,
             lostAt: lead.lostAt,
+            lossReasonId: lead.lossReasonId,
+            lossReasonLabel: lead.lossReasonLabel,
+            lossReasonNote: lead.lossReasonNote,
             notes: lead.notes,
             sellerId: lead.sellerId,
             sdrId: lead.sdrId,

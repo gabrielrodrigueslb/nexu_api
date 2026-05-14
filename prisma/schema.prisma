@@ -293,6 +293,20 @@ model Origin {
   @@index([active, createdAt])
 }
 
+model LossReason {
+  id        String   @id @default(cuid())
+  funnelId   String?
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  leads     Lead[]
+  funnel     CrmFunnel? @relation(fields: [funnelId], references: [id], onDelete: Cascade)
+
+  @@index([active, createdAt])
+  @@index([funnelId, active, createdAt])
+}
+
 model Indicator {
   id           String   @id @default(cuid())
   name         String
@@ -325,6 +339,7 @@ model CrmFunnel {
   createdAt  DateTime         @default(now())
   updatedAt  DateTime         @updatedAt
   stages     CrmFunnelStage[]
+  lossReasons LossReason[]
   leads      Lead[]
 
   @@index([active, sortOrder])
@@ -363,6 +378,9 @@ model Lead {
   planId        String?
   wonAt         DateTime?
   lostAt        DateTime?
+  lossReasonId  String?
+  lossReasonLabel String?
+  lossReasonNote String?
   notes         String?
   sellerId      String?
   sdrId         String?
@@ -374,6 +392,7 @@ model Lead {
   seller        User?             @relation("LeadSeller", fields: [sellerId], references: [id], onDelete: SetNull)
   sdr           User?             @relation("LeadSdr", fields: [sdrId], references: [id], onDelete: SetNull)
   origin        Origin?           @relation(fields: [originId], references: [id], onDelete: SetNull)
+  lossReasonRef LossReason?       @relation(fields: [lossReasonId], references: [id], onDelete: SetNull)
   indicator     Indicator?        @relation(fields: [indicatorId], references: [id], onDelete: SetNull)
   plan          Plan?             @relation(fields: [planId], references: [id], onDelete: SetNull)
   funnel        CrmFunnel?        @relation(fields: [funnelId], references: [id], onDelete: SetNull)
@@ -389,6 +408,7 @@ model Lead {
   @@index([sellerId, status])
   @@index([sdrId, status])
   @@index([originId, createdAt])
+  @@index([lossReasonId, lostAt])
   @@index([planId, status])
   @@index([funnelId, status])
   @@index([stageId])

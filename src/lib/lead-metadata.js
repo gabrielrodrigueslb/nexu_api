@@ -50,7 +50,6 @@ export function buildLeadMetadataNotes(input = {}) {
     representativeId: normalizeString(input.representativeId),
     representativeCommission: normalizeNumber(input.representativeCommission),
     passThroughAmount: normalizeNumber(input.passThroughAmount),
-    lossReason: normalizeString(input.lossReason),
   };
 
   const compactPayload = Object.fromEntries(

@@ -40,6 +40,11 @@ const simpleActiveNameSchema = z.object({
   active: z.boolean().optional(),
 });
 
+const lossReasonSchema = z.object({
+  name: z.string().trim().min(2).max(160),
+  active: z.boolean().optional(),
+});
+
 const planSchema = z.object({
   name: z.string().trim().min(2).max(120),
   description: z.string().trim().max(2000).optional().nullable(),
@@ -78,6 +83,13 @@ const crmFunnelSchema = z.object({
   name: z.string().trim().min(2).max(120),
   active: z.boolean().optional(),
   stages: z.array(crmFunnelStageSchema).min(1).optional(),
+  lossReasons: z.array(
+    z.object({
+      id: cuidSchema.optional(),
+      name: z.string().trim().min(1).max(160),
+      active: z.boolean().optional(),
+    }),
+  ).optional(),
 });
 
 catalogRouter.use(authenticate);
@@ -106,8 +118,12 @@ catalogRouter.get("/lookups", async (request, response) => {
     "view",
   );
 
-  const [origins, sdrs, indicators, items, plans] = await prisma.$transaction([
+  const [origins, lossReasons, sdrs, indicators, items, plans] = await prisma.$transaction([
     prisma.origin.findMany({
+      where: { active: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.lossReason.findMany({
       where: { active: true },
       orderBy: { name: "asc" },
     }),
@@ -137,6 +153,7 @@ catalogRouter.get("/lookups", async (request, response) => {
 
   response.json({
     origins,
+    lossReasons,
     sdrs: sdrs.map((item) => ({
       id: item.id,
       name: item.name,
@@ -187,10 +204,21 @@ catalogRouter.post(
             active: stage.active ?? true,
           })),
         },
+        lossReasons: request.body.lossReasons?.length
+          ? {
+              create: request.body.lossReasons.map((reason) => ({
+                name: reason.name,
+                active: reason.active ?? true,
+              })),
+            }
+          : undefined,
       },
       include: {
         stages: {
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        },
+        lossReasons: {
+          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
         },
       },
     });
@@ -221,6 +249,9 @@ catalogRouter.patch(
       include: {
         stages: {
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        },
+        lossReasons: {
+          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
         },
       },
     });
@@ -279,11 +310,58 @@ catalogRouter.patch(
         }
       }
 
+      if (Array.isArray(request.body.lossReasons)) {
+        const reasonNames = new Set();
+        for (const reason of request.body.lossReasons) {
+          const normalized = reason.name.trim().toLowerCase();
+          if (reasonNames.has(normalized)) {
+            throw new HttpError(409, "Existem motivos de perda duplicados neste funil");
+          }
+          reasonNames.add(normalized);
+        }
+
+        for (const reasonInput of request.body.lossReasons) {
+          if (reasonInput.id) {
+            await tx.lossReason.update({
+              where: { id: reasonInput.id },
+              data: {
+                funnelId: existing.id,
+                name: reasonInput.name,
+                active: reasonInput.active ?? true,
+              },
+            });
+          } else {
+            await tx.lossReason.create({
+              data: {
+                funnelId: existing.id,
+                name: reasonInput.name,
+                active: reasonInput.active ?? true,
+              },
+            });
+          }
+        }
+
+        const incomingReasonIds = new Set(
+          request.body.lossReasons.map((reason) => reason.id).filter(Boolean),
+        );
+
+        for (const existingReason of existing.lossReasons || []) {
+          if (!incomingReasonIds.has(existingReason.id)) {
+            await tx.lossReason.delete({
+              where: { id: existingReason.id },
+            });
+          }
+        }
+      }
+
       return tx.crmFunnel.findUnique({
         where: { id: existing.id },
         include: {
           stages: {
             orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+          },
+          lossReasons: {
+            orderBy: [{ name: "asc" }, { createdAt: "asc" }],
           },
         },
       });

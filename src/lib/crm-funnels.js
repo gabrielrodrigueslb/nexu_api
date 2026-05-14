@@ -34,6 +34,10 @@ export async function ensureDefaultCrmFunnel(client) {
         where: { active: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
+      lossReasons: {
+        where: { active: true },
+        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+      },
     },
   });
 
@@ -48,6 +52,10 @@ export async function ensureDefaultCrmFunnel(client) {
         where: { active: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
+      lossReasons: {
+        where: { active: true },
+        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+      },
     },
   });
 
@@ -61,6 +69,10 @@ export async function ensureDefaultCrmFunnel(client) {
         stages: {
           where: { active: true },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        },
+        lossReasons: {
+          where: { active: true },
+          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
         },
       },
     });
@@ -82,6 +94,10 @@ export async function ensureDefaultCrmFunnel(client) {
         where: { active: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
+      lossReasons: {
+        where: { active: true },
+        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+      },
     },
   });
 }
@@ -95,6 +111,10 @@ export async function listCrmFunnels(client, onlyActive = false) {
       stages: {
         where: onlyActive ? { active: true } : undefined,
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+      },
+      lossReasons: {
+        where: onlyActive ? { active: true } : undefined,
+        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
       },
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
@@ -121,6 +141,14 @@ export function serializeCrmFunnel(funnel) {
       active: stage.active,
       createdAt: stage.createdAt,
       updatedAt: stage.updatedAt,
+    })),
+    lossReasons: (funnel.lossReasons || []).map((reason) => ({
+      id: reason.id,
+      funnelId: reason.funnelId,
+      name: reason.name,
+      active: reason.active,
+      createdAt: reason.createdAt,
+      updatedAt: reason.updatedAt,
     })),
   };
 }

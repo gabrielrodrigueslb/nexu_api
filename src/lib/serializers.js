@@ -24,6 +24,8 @@ function serializeLeadReference(lead) {
 
   const metadata = parseLeadMetadata(lead.notes);
   const catalogItems = resolveLeadCatalogItems(lead);
+  const lossReasonLabel = lead.lossReasonLabel || lead.lossReasonRef?.name || metadata.lossReason || null;
+  const lossReasonNote = lead.lossReasonNote || null;
 
   return {
     id: lead.id,
@@ -85,7 +87,13 @@ function serializeLeadReference(lead) {
     representativeId: metadata.representativeId || null,
     representativeCommission: metadata.representativeCommission || 0,
     passThroughAmount: metadata.passThroughAmount || 0,
-    lossReason: metadata.lossReason || null,
+    lossReasonId: lead.lossReasonId || null,
+    lossReasonLabel,
+    lossReasonNote,
+    lossReason:
+      lossReasonLabel && lossReasonNote
+        ? `${lossReasonLabel} - ${lossReasonNote}`
+        : lossReasonLabel || lossReasonNote || null,
     seller: serializeUser(lead.seller),
     sdr: serializeUser(lead.sdr),
     origin: lead.origin || null,
@@ -149,6 +157,7 @@ export function serializeLead(lead) {
     seller,
     sdr,
     origin,
+    lossReasonRef,
     indicator,
     plan,
     tasks,
@@ -160,6 +169,8 @@ export function serializeLead(lead) {
   } = lead;
   const metadata = parseLeadMetadata(notes);
   const resolvedCatalogItems = resolveLeadCatalogItems(lead);
+  const lossReasonLabel = lead.lossReasonLabel || lead.lossReasonRef?.name || metadata.lossReason || null;
+  const lossReasonNote = lead.lossReasonNote || null;
 
   return {
     ...rest,
@@ -178,7 +189,13 @@ export function serializeLead(lead) {
     representativeId: metadata.representativeId || null,
     representativeCommission: metadata.representativeCommission || 0,
     passThroughAmount: metadata.passThroughAmount || 0,
-    lossReason: metadata.lossReason || null,
+    lossReasonId: lead.lossReasonId || null,
+    lossReasonLabel,
+    lossReasonNote,
+    lossReason:
+      lossReasonLabel && lossReasonNote
+        ? `${lossReasonLabel} - ${lossReasonNote}`
+        : lossReasonLabel || lossReasonNote || null,
     generatedTicketId: ticket?.code || null,
     generatedTicketStatus: ticket?.status || null,
     seller: serializeUser(seller),

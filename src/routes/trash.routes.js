@@ -45,6 +45,7 @@ async function ensureEntityDoesNotExist(tx, entityType, entityId) {
     CatalogItem: tx.catalogItem,
     Tag: tx.tag,
     Origin: tx.origin,
+    LossReason: tx.lossReason,
     Indicator: tx.indicator,
     Lead: tx.lead,
     Ticket: tx.ticket,
@@ -166,6 +167,9 @@ async function restoreTrashItem(tx, trashItem) {
       break;
     case "Origin":
       await tx.origin.create({ data: payload });
+      break;
+    case "LossReason":
+      await tx.lossReason.create({ data: payload });
       break;
     case "Indicator":
       await tx.indicator.create({ data: payload });
