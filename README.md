@@ -20,7 +20,7 @@ API em `Node.js ESM + Express + Prisma` com autenticacao `Bearer JWT`, refresh t
 ## Subir localmente
 
 1. Opcional: copie `.env.example` para `.env`
-   Sem `.env`, a API e o Prisma usam `file:./dev.db` como `DATABASE_URL` padrao para desenvolvimento local
+   Sem `.env`, a API e o Prisma usam `postgresql://postgres:postgres@localhost:5432/nexu_next?schema=public` como `DATABASE_URL` padrao para desenvolvimento local
 2. Instale dependencias:
 
 ```bash
@@ -110,5 +110,5 @@ curl -X POST http://localhost:3333/api/auth/login \
 
 - Troque `JWT_ACCESS_SECRET` antes de producao
 - Em producao, prefira banco gerenciado e rotacao de segredos
-- O projeto esta pronto para evoluir para PostgreSQL, mas vem configurado com SQLite para subir rapido no ambiente local
+- O schema principal do Prisma esta configurado para PostgreSQL
 - Neste ambiente Windows + Node atual, o `prisma db push` pode falhar com erro generico de engine; por isso o bootstrap local usa `npm run db:init`

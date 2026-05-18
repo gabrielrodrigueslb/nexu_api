@@ -20,12 +20,127 @@ function buildDefaultStages() {
   }));
 }
 
+function isLossReasonQueryUnavailable(error) {
+  const message = String(error?.message || "");
+
+  return (
+    error?.code === "P2021" ||
+    error?.code === "P2022" ||
+    message.includes("LossReason") ||
+    message.includes("lossReason")
+  );
+}
+
+function withSerializedLossReasons(funnel) {
+  if (!funnel) return funnel;
+
+  return {
+    ...funnel,
+    lossReasons: Array.isArray(funnel.lossReasons) ? funnel.lossReasons : [],
+  };
+}
+
+async function findFirstFunnelWithOptionalLossReasons(client, args) {
+  try {
+    return await client.crmFunnel.findFirst({
+      ...args,
+      include: {
+        ...args.include,
+        lossReasons: {
+          where: { active: true },
+          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+        },
+      },
+    });
+  } catch (error) {
+    if (!isLossReasonQueryUnavailable(error)) {
+      throw error;
+    }
+
+    const funnel = await client.crmFunnel.findFirst(args);
+    return withSerializedLossReasons(funnel);
+  }
+}
+
+async function findManyFunnelsWithOptionalLossReasons(client, args) {
+  try {
+    return await client.crmFunnel.findMany({
+      ...args,
+      include: {
+        ...args.include,
+        lossReasons: {
+          where: args.where?.active ? { active: true } : undefined,
+          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+        },
+      },
+    });
+  } catch (error) {
+    if (!isLossReasonQueryUnavailable(error)) {
+      throw error;
+    }
+
+    const funnels = await client.crmFunnel.findMany(args);
+    return funnels.map(withSerializedLossReasons);
+  }
+}
+
+async function createFunnelWithOptionalLossReasons(client, args) {
+  try {
+    return await client.crmFunnel.create({
+      ...args,
+      include: {
+        ...args.include,
+        lossReasons: {
+          where: { active: true },
+          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+        },
+      },
+    });
+  } catch (error) {
+    if (!isLossReasonQueryUnavailable(error)) {
+      throw error;
+    }
+
+    const sanitizedData = { ...args.data };
+    delete sanitizedData.lossReasons;
+
+    const funnel = await client.crmFunnel.create({
+      ...args,
+      data: sanitizedData,
+    });
+
+    return withSerializedLossReasons(funnel);
+  }
+}
+
+async function updateFunnelWithOptionalLossReasons(client, args) {
+  try {
+    return await client.crmFunnel.update({
+      ...args,
+      include: {
+        ...args.include,
+        lossReasons: {
+          where: { active: true },
+          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
+        },
+      },
+    });
+  } catch (error) {
+    if (!isLossReasonQueryUnavailable(error)) {
+      throw error;
+    }
+
+    const funnel = await client.crmFunnel.update(args);
+    return withSerializedLossReasons(funnel);
+  }
+}
+
 export function getDefaultCrmStageNames() {
   return [...DEFAULT_STAGE_NAMES];
 }
 
 export async function ensureDefaultCrmFunnel(client) {
-  const existingDefault = await client.crmFunnel.findFirst({
+  const existingDefault = await findFirstFunnelWithOptionalLossReasons(client, {
     where: {
       isDefault: true,
     },
@@ -34,10 +149,6 @@ export async function ensureDefaultCrmFunnel(client) {
         where: { active: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
-      lossReasons: {
-        where: { active: true },
-        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
-      },
     },
   });
 
@@ -45,22 +156,18 @@ export async function ensureDefaultCrmFunnel(client) {
     return existingDefault;
   }
 
-  const existingAny = await client.crmFunnel.findFirst({
+  const existingAny = await findFirstFunnelWithOptionalLossReasons(client, {
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
     include: {
       stages: {
         where: { active: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
-      lossReasons: {
-        where: { active: true },
-        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
-      },
     },
   });
 
   if (existingAny) {
-    return client.crmFunnel.update({
+    return updateFunnelWithOptionalLossReasons(client, {
       where: { id: existingAny.id },
       data: {
         isDefault: true,
@@ -70,15 +177,11 @@ export async function ensureDefaultCrmFunnel(client) {
           where: { active: true },
           orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
         },
-        lossReasons: {
-          where: { active: true },
-          orderBy: [{ name: "asc" }, { createdAt: "asc" }],
-        },
       },
     });
   }
 
-  return client.crmFunnel.create({
+  return createFunnelWithOptionalLossReasons(client, {
     data: {
       name: DEFAULT_FUNNEL_NAME,
       slug: DEFAULT_FUNNEL_SLUG,
@@ -94,10 +197,6 @@ export async function ensureDefaultCrmFunnel(client) {
         where: { active: true },
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
       },
-      lossReasons: {
-        where: { active: true },
-        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
-      },
     },
   });
 }
@@ -105,16 +204,12 @@ export async function ensureDefaultCrmFunnel(client) {
 export async function listCrmFunnels(client, onlyActive = false) {
   await ensureDefaultCrmFunnel(client);
 
-  return client.crmFunnel.findMany({
+  return findManyFunnelsWithOptionalLossReasons(client, {
     where: onlyActive ? { active: true } : undefined,
     include: {
       stages: {
         where: onlyActive ? { active: true } : undefined,
         orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
-      },
-      lossReasons: {
-        where: onlyActive ? { active: true } : undefined,
-        orderBy: [{ name: "asc" }, { createdAt: "asc" }],
       },
     },
     orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],

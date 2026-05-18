@@ -8,10 +8,9 @@ dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const databaseUrl = process.env.DATABASE_URL || "file:./dev.db";
-const relativePath = databaseUrl.replace(/^file:/, "");
-const databasePath = path.resolve(__dirname, relativePath);
-const journalPath = `${databasePath}-journal`;
+const databaseUrl =
+  process.env.DATABASE_URL ||
+  "postgresql://postgres:postgres@localhost:5432/nexu_next?schema=public";
 const force = process.argv.includes("--force");
 const prismaCliPath = path.resolve(__dirname, "../node_modules/prisma/build/index.js");
 
@@ -35,6 +34,7 @@ function normalizeDatabaseUrl(rawDatabaseUrl) {
 
 const normalizedDatabaseUrl = normalizeDatabaseUrl(databaseUrl);
 const normalizedDatabasePath = normalizedDatabaseUrl.replace(/^file:/, "");
+const isSqlite = normalizedDatabaseUrl.startsWith("file:");
 
 function sqliteTableExists(tableName) {
   if (!fs.existsSync(normalizedDatabasePath) || fs.statSync(normalizedDatabasePath).size === 0) {
@@ -65,14 +65,14 @@ function sqliteTableExists(tableName) {
   return probe.status === 0 && probe.stdout.includes(tableName);
 }
 
-if (fs.existsSync(normalizedDatabasePath) && !force && sqliteTableExists("User")) {
+if (isSqlite && fs.existsSync(normalizedDatabasePath) && !force && sqliteTableExists("User")) {
   console.log(
     `Banco ja inicializado em ${normalizedDatabasePath}. Use "npm run db:init -- --force" para recriar.`,
   );
   process.exit(0);
 }
 
-if (force) {
+if (isSqlite && force) {
   try {
     fs.rmSync(normalizedDatabasePath, { force: true });
     fs.rmSync(`${normalizedDatabasePath}-journal`, { force: true });
@@ -109,4 +109,8 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
-console.log(`Banco SQLite inicializado em ${normalizedDatabasePath}`);
+if (isSqlite) {
+  console.log(`Banco SQLite inicializado em ${normalizedDatabasePath}`);
+} else {
+  console.log(`Banco PostgreSQL sincronizado em ${normalizedDatabaseUrl}`);
+}

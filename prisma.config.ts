@@ -1,31 +1,9 @@
 import "dotenv/config";
-import path from "node:path";
 import { defineConfig } from "prisma/config";
-import { fileURLToPath } from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const prismaDirectory = path.resolve(__dirname, "prisma");
-
-function normalizeDatabaseUrl(databaseUrl: string) {
-  if (!databaseUrl.startsWith("file:")) {
-    return databaseUrl;
-  }
-
-  const sqlitePath = databaseUrl.slice("file:".length);
-
-  if (!sqlitePath) {
-    return databaseUrl;
-  }
-
-  const resolvedPath = path.isAbsolute(sqlitePath)
-    ? sqlitePath
-    : path.resolve(prismaDirectory, sqlitePath);
-
-  return `file:${resolvedPath.replace(/\\/g, "/")}`;
-}
-
-process.env.DATABASE_URL = normalizeDatabaseUrl(process.env.DATABASE_URL ?? "file:./dev.db");
+process.env.DATABASE_URL =
+  process.env.DATABASE_URL ??
+  "postgresql://postgres:postgres@localhost:5432/nexu_next?schema=public";
 
 export default defineConfig({
   schema: "prisma/schema.prisma",

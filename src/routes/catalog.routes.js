@@ -118,12 +118,8 @@ catalogRouter.get("/lookups", async (request, response) => {
     "view",
   );
 
-  const [origins, lossReasons, sdrs, indicators, items, plans] = await prisma.$transaction([
+  const [origins, sdrs, indicators, items, plans] = await prisma.$transaction([
     prisma.origin.findMany({
-      where: { active: true },
-      orderBy: { name: "asc" },
-    }),
-    prisma.lossReason.findMany({
       where: { active: true },
       orderBy: { name: "asc" },
     }),
@@ -150,6 +146,11 @@ catalogRouter.get("/lookups", async (request, response) => {
     }),
   ]);
   const funnels = await listCrmFunnels(prisma, true);
+  const lossReasons = [...new Map(
+    funnels
+      .flatMap((funnel) => funnel.lossReasons || [])
+      .map((reason) => [reason.id, reason]),
+  ).values()];
 
   response.json({
     origins,
